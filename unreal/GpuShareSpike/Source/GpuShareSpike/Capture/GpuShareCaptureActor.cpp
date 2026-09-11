@@ -12,6 +12,8 @@
 #include "Engine/TextureRenderTargetCube.h"
 #include "Engine/World.h"
 #include "Math/PerspectiveMatrix.h"
+#include "Math/RotationMatrix.h"       // FInverseRotationMatrix
+#include "Math/TranslationMatrix.h"    // FTranslationMatrix
 #include "RHI.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
