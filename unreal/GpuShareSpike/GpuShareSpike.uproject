@@ -1,0 +1,22 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.7",
+	"Category": "Spike",
+	"Description": "Spike di trasporto texture GPU cross-processo Unreal -> Unity (D3D11 shared NT handle + keyed mutex).",
+	"Modules": [
+		{
+			"Name": "GpuShareSpike",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"AdditionalDependencies": [
+				"Engine"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": false
+		}
+	]
+}
