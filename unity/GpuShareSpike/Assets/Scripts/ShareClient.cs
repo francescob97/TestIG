@@ -151,6 +151,18 @@ namespace GpuShareSpike
                 return;
             }
 
+            // TRAPPOLA CLASSICA: far seguire al driver la PresentCamera.
+            // Il quad e' figlio della PresentCamera, quindi si muoverebbe
+            // insieme a lei e a schermo non cambierebbe nulla, mentre la
+            // configurazione ortografica qui sotto verrebbe scavalcata.
+            if (_driver.Mode == VirtualCameraDriver.DriveMode.FollowTransform &&
+                _driver.SourceTransform == PresentCamera.transform)
+            {
+                Debug.LogError("[GpuShare] VirtualCameraDriver.SourceTransform punta alla PresentCamera. "
+                             + "Usa un GameObject separato come punto di vista: il quad e' figlio della "
+                             + "PresentCamera e la seguirebbe, quindi l'immagine non cambierebbe mai.");
+            }
+
             // Camera ortografica: il quad copre esattamente lo schermo senza
             // dipendere dal FOV. La camera di Unity NON e' quella che renderizza
             // la scena 3D (lo fa Unreal): qui serve solo a mostrare la texture.

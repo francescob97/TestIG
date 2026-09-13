@@ -127,6 +127,13 @@ Sono già nelle posizioni giuste se hai creato il progetto Unity dentro
 Il quad a schermo intero viene creato a runtime da `ShareClient` e agganciato
 alla camera: non c'è niente da posizionare a mano.
 
+> **In scena ci sono due cose chiamate "camera" e non c'entrano niente l'una con
+> l'altra**: la *camera virtuale* (`VirtualCameraDriver`, che è solo una pose
+> spedita a Unreal e determina l'inquadratura) e la *present camera*
+> (ortografica, che disegna solo il quad). Per far seguire a Unreal un oggetto
+> della tua scena Unity usa `Mode = FollowTransform`.
+> Dettagli in [`Assets/Scenes/README.md`](../unity/GpuShareSpike/Assets/Scenes/README.md).
+
 ---
 
 ## 6. Ordine di avvio

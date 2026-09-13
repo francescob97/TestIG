@@ -178,6 +178,32 @@ Da controllare, in ordine di probabilità:
 4. **Canale CUBE acceso** a cadenza alta: sono sei render completi per cattura.
 5. `Main Capture Hz` impostato basso: stai cappando tu la cattura.
 
+### Tutto scatta di brutto quando Unreal non ha il focus
+
+Non è il trasporto: **è Unreal che si strozza da solo quando la sua finestra non
+è in primo piano.** Guarda l'HUD mentre dai il fuoco a Unity — se gli **FPS di
+Unreal** crollano, è throttling; se restano alti e salgono solo le
+**ripetizioni**, allora è davvero il trasporto (ma non succederà).
+
+Rimedi, in ordine:
+
+1. **Editor Preferences → Performance → *Use Less CPU when in Background*** →
+   **disattivalo**. È il colpevole numero uno quando lanci lo Standalone
+   dall'editor: nonostante il nome parli dell'editor, è la cosa che la gente
+   segnala come fix per le istanze Standalone non focalizzate.
+2. **`t.IdleWhenNotForeground 0`** — questa CVar sospende *rendering e tick*
+   quando la finestra non è in foreground. Verifica che non sia a 1.
+3. Nei **build packaged** la voce dell'editor non ha effetto: lì il
+   comportamento è a livello di engine/OS.
+4. **Fai a meno della finestra di Unreal.** In questo spike Unreal non ha alcun
+   bisogno di una finestra visibile: renderizza nelle SceneCapture. Prova ad
+   avviarlo con `-RenderOffScreen`. Se funziona, il problema del focus sparisce
+   del tutto perché non c'è più una finestra che possa perderlo — ed elimini
+   anche il costo del render della viewport principale.
+5. Come ripiego, tieni entrambe le finestre visibili e **non focalizzate**
+   (clicca sul desktop): quando nessuna delle due ha il fuoco, il throttling non
+   scatta su nessuna delle due.
+
 ### Tante ripetizioni (`ripetizioni` sale in fretta)
 
 Unity gira più veloce di Unreal: ci sono più frame di Unity che frame prodotti da
