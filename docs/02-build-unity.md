@@ -127,11 +127,11 @@ Sono già nelle posizioni giuste se hai creato il progetto Unity dentro
 Il quad a schermo intero viene creato a runtime da `ShareClient` e agganciato
 alla camera: non c'è niente da posizionare a mano.
 
-> **In scena ci sono due cose chiamate "camera" e non c'entrano niente l'una con
-> l'altra**: la *camera virtuale* (`VirtualCameraDriver`, che è solo una pose
-> spedita a Unreal e determina l'inquadratura) e la *present camera*
-> (ortografica, che disegna solo il quad). Per far seguire a Unreal un oggetto
-> della tua scena Unity usa `Mode = FollowTransform`.
+> **La tua camera di Unity è il punto di vista**: il quad le è figlio, quindi la
+> segue e resta a riempire lo schermo, mentre la sua pose va a Unreal e cambia
+> il contenuto della texture. La pose è relativa a un'origine che corrisponde
+> all'**attore ancora** lato Unreal, così Unity lavora sempre in uno spazio
+> locale in metri e l'ancora lo colloca nel mondo grande.
 > Dettagli in [`Assets/Scenes/README.md`](../unity/GpuShareSpike/Assets/Scenes/README.md).
 
 ---

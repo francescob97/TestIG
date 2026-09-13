@@ -187,3 +187,4 @@ Se ti fermi prima di una di queste righe, vai a
 | `Producer Acquire Timeout Ms` | 2 | Quanto Unreal aspetta un buffer libero prima di **saltare** il frame. Non alzarlo troppo: bloccare il render thread di Unreal per colpa di Unity è peggio che perdere un frame. |
 | `Use Named Shared Handles` | ❌ | Fallback se `DuplicateHandle` fallisce. Vedi troubleshooting. |
 | `Render Fov Margin Deg` | 0 | Renderizza più largo di quanto Unity mostra, per il re-crop tardivo. |
+| `Pose Relative To Anchor` | ✅ | La pose di Unity è **relativa** all'attore di cattura, che fa da **ancora**: l'origine del mondo Unity coincide con la transform di quell'attore, e quella transform resta libera per chi la deve comandare. Spegnilo per avere pose di mondo assolute. |

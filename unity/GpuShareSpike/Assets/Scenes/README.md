@@ -27,34 +27,60 @@ alto a sinistra deve passare da *"in attesa dell'handshake di Unreal..."* a
 
 Se resta in attesa, vedi [`docs/05-troubleshooting.md`](../../../../docs/05-troubleshooting.md).
 
-## Le due "camere", che non c'entrano niente l'una con l'altra
+## Come funziona, in una frase
 
-È il punto in cui ci si confonde di più.
+**La tua camera di Unity è il punto di vista.** Il quad le viene creato figlio:
+è uno schermo incollato davanti all'occhio. Muovendo la camera si muovono
+entrambi, quindi il quad resta a riempire lo schermo — quello che cambia è il
+**contenuto** della texture, perché la pose della camera va a Unreal e Unreal
+rirenderizza da lì.
 
-| | Cosa fa | Cosa NON fa |
-|---|---|---|
-| **Camera virtuale** (`VirtualCameraDriver`) | È solo una posizione + rotazione, spedita a Unreal via UDP. È **il punto di vista nel mondo 3D**: Unreal ci mette lì la sua camera e renderizza da lì. | Non renderizza niente. Non è un `Camera` di Unity. |
-| **Present camera** (`ShareClient.PresentCamera`) | È ortografica e disegna il quad con la texture che arriva da Unreal. | Non ha alcun rapporto col punto di vista 3D. Muoverla non cambia l'inquadratura. |
+Unity comanda la vista di Unreal, e con quella vista ci vede.
 
-Quello che vedi a schermo **è** la vista della camera di Unreal. Si muove da
-sola perché il driver è in `DeterministicSweep`.
+Di default `ShareClient` aggancia il driver alla `PresentCamera` stessa: non
+devi fare niente. Assegna un `Source Transform` diverso solo se il punto di
+vista è un altro oggetto — un character controller, un rig, più avanti l'XR rig.
 
-## Far seguire a Unreal un oggetto della tua scena Unity
+## Le due origini che si corrispondono
 
-Su `VirtualCameraDriver`:
+La pose spedita è **relativa** a `Origin Transform` (vuoto = origine del mondo
+Unity). Dall'altra parte Unreal la applica **in relativo all'attore di cattura**,
+che fa da **ancora**:
 
-1. **Mode** → `FollowTransform`
-2. **Source Transform** → il GameObject che rappresenta il punto di vista
-3. **Source Camera** *(opzionale)* → una `Camera` da cui prendere FOV verticale,
-   near e far, così Unreal renderizza con gli stessi parametri che la logica di
-   Unity crede di avere
+```
+origine di Unity   ==   transform dell'attore ancora nel mondo Unreal
+```
 
-> **Non usare la Present Camera come Source Transform.** Il quad le è figlio,
-> quindi la seguirebbe e a schermo non cambierebbe nulla. `ShareClient` se ne
-> accorge e logga un errore, ma tanto vale saperlo prima.
->
-> Usa un GameObject separato: un player controller, un rig, più avanti l'XR rig.
-> Può anche avere una `Camera` disattivata sopra, serve solo per i parametri.
+```
+        UNITY                                  UNREAL
+   OriginTransform  ─────── stesso punto ────  AGpuShareCaptureActor  (ancora)
+   (o l'origine)                                 │   ← muovila con quello che vuoi:
+        │                                        │     Blueprint, C++, un componente
+        └── Camera (WASD) ── pose relativa ──►   └── CameraRoot
+              └── quad                                 └── SceneCapture ×N
+```
+
+Unity lavora sempre in uno spazio locale piccolo, in metri, vicino all'origine.
+L'ancora lo colloca dove serve nel mondo enorme di Unreal, e **chi muove
+l'ancora si porta dietro tutto lo spazio di Unity**. È lo stesso pattern del
+georeference di Cesium, ed è il motivo per cui la precisione in singola non
+degrada quando ti allontani dall'origine.
+
+L'attore di cattura nasce all'origine del mondo Unreal, quindi di partenza le
+due origini coincidono. Da lì in poi la transform dell'attore è **libera**:
+questo codice non la tocca mai.
+
+Se ti serve invece che la pose sia una transform di mondo assoluta, spegni
+`bPoseRelativeToAnchor` nei Project Settings di Unreal.
+
+## Una camera o due?
+
+`ShareClient.Projection`:
+
+| | Quando usarla |
+|---|---|
+| **Orthographic** *(default)* | Il quad riempie lo schermo a prescindere dal FOV. Il FOV spedito a Unreal resta un parametro indipendente del driver. Robusto, disaccoppiato. |
+| **Perspective** | **Una sola camera vera.** Il suo `fieldOfView` è quello che va a Unreal, e il quad riempie esattamente il frustum a `QuadDistance`. La corrispondenza tra ciò che Unreal renderizza e ciò che vedi è 1:1 — è la modalità giusta verso cui andare per il VR. |
 
 ## Tasti e parametri utili
 
@@ -63,5 +89,5 @@ Su `VirtualCameraDriver`:
 | **F1** | mostra/nasconde l'HUD |
 | `ShareClient → Debug Mode` | `0` colore, `1` depth in scala di grigi, `2` zoom sugli 8 pixel del marker |
 | `ShareClient → Srgb Decode` | inverti se i colori sembrano sbagliati |
-| `VirtualCameraDriver → Mode` | `DeterministicSweep` (default, per misurare), `Manual` (WASD + mouse) o `FollowTransform` (segue un oggetto della scena) |
+| `VirtualCameraDriver → Mode` | `Manual` (WASD + mouse, **muove** la camera), `DeterministicSweep` (default, oscillazione ripetibile per misurare, **muove** la camera), `FollowTransform` (**legge** e basta: usala quando a muovere la camera è altro) |
 | `VirtualCameraDriver → Sweep Hz` | più è alto, più la latenza è visibile a occhio |

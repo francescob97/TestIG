@@ -34,7 +34,22 @@ namespace GpuShareSpike
         public bool WantCube = false;
 
         [Header("Presentazione")]
+        [Tooltip("La camera che E' il punto di vista. Il quad viene creato come sua figlia.")]
         public Camera PresentCamera;
+
+        public enum PresentProjection
+        {
+            /// <summary>Il quad riempie lo schermo a prescindere dal FOV. Robusto, disaccoppiato.</summary>
+            Orthographic,
+            /// <summary>Camera prospettica: il quad riempie esattamente il frustum. Il FOV della camera e' quello spedito a Unreal, quindi la corrispondenza e' 1:1.</summary>
+            Perspective,
+        }
+
+        [Tooltip("Orthographic e' il default robusto. Perspective serve se vuoi UNA sola camera vera, con il suo FOV, che comanda anche l'inquadratura di Unreal.")]
+        public PresentProjection Projection = PresentProjection.Orthographic;
+
+        [Tooltip("Distanza del quad dalla camera, in metri. Rilevante solo in Perspective.")]
+        public float QuadDistance = 1.0f;
         [Tooltip("Assegna GpuSharePresent.shader. Se lasci vuoto si prova Shader.Find, che in un Player funziona solo se lo shader e' negli Always Included Shaders.")]
         public Shader PresentShader;
         [Tooltip("0 = colore, 1 = depth, 2 = zoom sui pixel del marker")]
@@ -151,27 +166,44 @@ namespace GpuShareSpike
                 return;
             }
 
-            // TRAPPOLA CLASSICA: far seguire al driver la PresentCamera.
-            // Il quad e' figlio della PresentCamera, quindi si muoverebbe
-            // insieme a lei e a schermo non cambierebbe nulla, mentre la
-            // configurazione ortografica qui sotto verrebbe scavalcata.
-            if (_driver.Mode == VirtualCameraDriver.DriveMode.FollowTransform &&
-                _driver.SourceTransform == PresentCamera.transform)
+            // Per default IL PUNTO DI VISTA E' LA PRESENT CAMERA STESSA.
+            // Il quad le viene creato figlio: e' uno schermo incollato davanti
+            // all'occhio, quindi muovendo la camera si muovono entrambi e il
+            // quad resta a riempire lo schermo. Quello che cambia e' il
+            // contenuto della texture, perche' la pose va a Unreal.
+            // Assegna un SourceTransform diverso solo se il punto di vista e'
+            // un altro oggetto (un rig, un character controller, un XR rig).
+            if (_driver.SourceTransform == null)
             {
-                Debug.LogError("[GpuShare] VirtualCameraDriver.SourceTransform punta alla PresentCamera. "
-                             + "Usa un GameObject separato come punto di vista: il quad e' figlio della "
-                             + "PresentCamera e la seguirebbe, quindi l'immagine non cambierebbe mai.");
+                _driver.SourceTransform = PresentCamera.transform;
+            }
+            if (_driver.SourceCamera == null && Projection == PresentProjection.Perspective)
+            {
+                _driver.SourceCamera = PresentCamera;
             }
 
-            // Camera ortografica: il quad copre esattamente lo schermo senza
-            // dipendere dal FOV. La camera di Unity NON e' quella che renderizza
-            // la scena 3D (lo fa Unreal): qui serve solo a mostrare la texture.
-            PresentCamera.orthographic = true;
-            PresentCamera.orthographicSize = 0.5f;
-            PresentCamera.nearClipPlane = 0.01f;
-            PresentCamera.farClipPlane = 10.0f;
             PresentCamera.clearFlags = CameraClearFlags.SolidColor;
             PresentCamera.backgroundColor = Color.black;
+
+            if (Projection == PresentProjection.Orthographic)
+            {
+                // Il quad copre lo schermo a prescindere dal FOV: il FOV spedito
+                // a Unreal resta un parametro indipendente del driver.
+                PresentCamera.orthographic = true;
+                PresentCamera.orthographicSize = 0.5f;
+                PresentCamera.nearClipPlane = 0.01f;
+                PresentCamera.farClipPlane = 10.0f;
+            }
+            else
+            {
+                // Una sola camera vera: il suo FOV e' quello che va a Unreal, e
+                // il quad riempie esattamente il frustum a QuadDistance. La
+                // corrispondenza tra cio' che Unreal renderizza e cio' che vedi
+                // e' 1:1, che e' la cosa giusta quando arriverai al VR.
+                PresentCamera.orthographic = false;
+                PresentCamera.nearClipPlane = Mathf.Min(PresentCamera.nearClipPlane, QuadDistance * 0.5f);
+                PresentCamera.farClipPlane = Mathf.Max(PresentCamera.farClipPlane, QuadDistance * 2.0f);
+            }
 
             Channel = new ControlChannelClient();
             if (!Channel.Open(UnrealHost, UnrealPort, out string networkError))
@@ -391,7 +423,8 @@ namespace GpuShareSpike
             if (collider != null) Destroy(collider);
 
             _quad.transform.SetParent(PresentCamera.transform, false);
-            _quad.transform.localPosition = new Vector3(0.0f, 0.0f, 1.0f);
+            _quad.transform.localPosition = new Vector3(0.0f, 0.0f,
+                Projection == PresentProjection.Perspective ? QuadDistance : 1.0f);
             _quad.transform.localRotation = Quaternion.identity;
             _quad.GetComponent<MeshRenderer>().sharedMaterial = _material;
         }
@@ -400,12 +433,23 @@ namespace GpuShareSpike
         {
             if (_quad == null || PresentCamera == null) return;
 
-            // Camera ortografica di size S: l'altezza visibile e' 2S e la
-            // larghezza 2S*aspect. Ricalcolato ogni frame perche' la finestra
-            // puo' essere ridimensionata.
-            float halfHeight = PresentCamera.orthographicSize;
+            // Ricalcolato ogni frame perche' la finestra puo' essere ridimensionata.
             float aspect = Screen.height > 0 ? (float)Screen.width / Screen.height : 16.0f / 9.0f;
-            _quad.transform.localScale = new Vector3(halfHeight * 2.0f * aspect, halfHeight * 2.0f, 1.0f);
+            float height;
+
+            if (Projection == PresentProjection.Perspective)
+            {
+                // Altezza del frustum alla distanza del quad: 2 * d * tan(fov/2).
+                float halfFovRad = PresentCamera.fieldOfView * 0.5f * Mathf.Deg2Rad;
+                height = 2.0f * QuadDistance * Mathf.Tan(halfFovRad);
+            }
+            else
+            {
+                // Camera ortografica di size S: l'altezza visibile e' 2S.
+                height = PresentCamera.orthographicSize * 2.0f;
+            }
+
+            _quad.transform.localScale = new Vector3(height * aspect, height, 1.0f);
         }
 
         private void UpdateMaterial()

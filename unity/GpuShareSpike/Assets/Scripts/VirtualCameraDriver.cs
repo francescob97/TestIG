@@ -1,33 +1,41 @@
 // ============================================================================
-//  Genera le pose che Unity manda a Unreal. E' LA camera virtuale: la camera
-//  di Unreal si mette esattamente dove dice questo componente.
+//  Produce la pose che Unity manda a Unreal.
 //
-//  ATTENZIONE ALLA DISTINZIONE PIU' CONFONDENTE DI TUTTO IL PROGETTO.
-//  In scena ci sono DUE cose che si chiamano "camera" e non c'entrano niente
-//  l'una con l'altra:
+//  ------------------------------------------------------------------------
+//  IL MODELLO, IN UNA FRASE
+//  La tua camera di Unity e' il punto di vista. Il quad le e' figlio ed e' uno
+//  schermo incollato davanti all'occhio. Muovendo la camera si muovono
+//  entrambi, quindi il quad resta a riempire lo schermo: quello che cambia e'
+//  il CONTENUTO della texture, perche' la pose della camera va a Unreal e
+//  Unreal rirenderizza da li'.
 //
-//    1. LA CAMERA VIRTUALE (questo componente)
-//       Non renderizza nulla. E' solo una posizione + rotazione che viene
-//       spedita a Unreal via UDP. E' il punto di vista nel mondo 3D.
+//  Unity comanda la vista di Unreal, e con quella vista ci vede.
+//  ------------------------------------------------------------------------
 //
-//    2. LA PRESENT CAMERA (ShareClient.PresentCamera)
-//       E' ortografica e serve SOLO a disegnare il quad con la texture che
-//       arriva da Unreal. Non ha niente a che vedere col punto di vista 3D.
+//  DUE ORIGINI CHE SI CORRISPONDONO
+//  La pose spedita e' RELATIVA a OriginTransform (se non lo assegni, e'
+//  relativa all'origine del mondo di Unity). Dall'altra parte, Unreal la
+//  applica in relativo all'attore di cattura, che fa da ANCORA.
 //
-//  NON far seguire a FollowTransform la PresentCamera: il quad le e' figlio,
-//  quindi si muoverebbe insieme a lei e a schermo non cambierebbe nulla.
-//  Usa un GameObject separato (un rig, un player controller, l'XR rig...).
+//      origine di Unity  ==  transform dell'attore ancora nel mondo Unreal
+//
+//  Quindi Unity lavora sempre in uno spazio locale piccolo, in metri e vicino
+//  all'origine, mentre l'ancora lo colloca dove serve nel mondo enorme di
+//  Unreal, e chi muove l'ancora si porta dietro tutto lo spazio di Unity.
+//  E' lo stesso pattern del georeference di Cesium, ed e' il motivo per cui
+//  la precisione in singola non degrada quando ti allontani.
 //
 //  MODALITA':
-//    DeterministicSweep  oscillazione nota e ripetibile. E' il default perche'
-//                        rende la latenza visibile a occhio come uno
-//                        scostamento angolare costante, e confrontabile tra
-//                        una misura e l'altra. Col mouse in mano non confronti
-//                        niente.
-//    Manual              WASD + mouse, per le prove qualitative.
-//    FollowTransform     segue un Transform di Unity. E' la modalita' da usare
-//                        quando vuoi che la camera di Unreal stia esattamente
-//                        dove sta un oggetto della tua scena Unity.
+//    Manual             WASD + mouse. MUOVE SourceTransform, cioe' la tua
+//                       camera vera.
+//    DeterministicSweep oscillazione nota e ripetibile intorno alla posizione
+//                       di partenza. MUOVE SourceTransform. E' il default
+//                       perche' rende la latenza visibile a occhio come uno
+//                       scostamento angolare costante, e confrontabile tra una
+//                       misura e l'altra: col mouse in mano non confronti niente.
+//    FollowTransform    non muove niente, LEGGE e basta. Usala quando a muovere
+//                       la camera e' altro: un character controller, Cinemachine,
+//                       un XR rig.
 // ============================================================================
 
 using UnityEngine;
@@ -46,6 +54,16 @@ namespace GpuShareSpike
         [Header("Modalita'")]
         public DriveMode Mode = DriveMode.DeterministicSweep;
 
+        [Header("Punto di vista")]
+        [Tooltip("Il Transform che E' il punto di vista. Lasciando vuoto, ShareClient ci mette la PresentCamera. Manual e Sweep lo MUOVONO; FollowTransform lo legge soltanto.")]
+        public Transform SourceTransform;
+
+        [Tooltip("Opzionale. Se assegnata, FOV verticale, near e far vengono presi da questa Camera invece che dai campi qui sotto.")]
+        public Camera SourceCamera;
+
+        [Tooltip("Opzionale. La pose spedita e' relativa a questo Transform; corrisponde all'attore ancora lato Unreal. Vuoto = origine del mondo di Unity.")]
+        public Transform OriginTransform;
+
         [Header("Sweep deterministico")]
         [Tooltip("Ampiezza dell'oscillazione di imbardata, in gradi.")]
         public float SweepYawAmplitudeDeg = 35.0f;
@@ -60,88 +78,173 @@ namespace GpuShareSpike
         public float MoveSpeed = 4.0f;
         public float LookSensitivity = 2.0f;
 
-        [Header("Follow transform")]
-        [Tooltip("Il Transform che la camera di Unreal deve seguire. NON usare la PresentCamera: il quad le e' figlio.")]
-        public Transform SourceTransform;
-
-        [Tooltip("Opzionale. Se assegnata, FOV verticale, near e far vengono presi da questa Camera invece che dai campi qui sotto.")]
-        public Camera SourceCamera;
-
-        [Header("Camera")]
+        [Header("Camera (usati se SourceCamera non e' assegnata)")]
         public float FovYDeg = 60.0f;
         [Tooltip("Metri.")] public float NearM = 0.1f;
         [Tooltip("Metri. 0 = infinito.")] public float FarM = 0.0f;
 
-        public Vector3 Origin = new Vector3(0.0f, 2.5f, -6.0f);
+        [Tooltip("Posizione di partenza usata quando SourceTransform non e' assegnato.")]
+        public Vector3 FallbackStartPosition = new Vector3(0.0f, 2.5f, -6.0f);
 
+        /// <summary>Pose relativa a OriginTransform: e' questa che viene spedita.</summary>
         public Vector3 Position { get; private set; }
         public Quaternion Rotation { get; private set; }
+
+        /// <summary>Pose in coordinate di mondo Unity, utile per diagnostica.</summary>
+        public Vector3 WorldPosition { get; private set; }
+        public Quaternion WorldRotation { get; private set; }
 
         private float _time;
         private float _manualYaw;
         private float _manualPitch;
-        private Vector3 _manualPosition;
+        private Vector3 _fallbackPosition;
+        private Quaternion _fallbackRotation = Quaternion.identity;
+        private Vector3 _sweepBasePosition;
+        private bool _sweepBaseCaptured;
+        private bool _warnedAboutOriginScale;
 
         private void Awake()
         {
-            _manualPosition = Origin;
-            Position = Origin;
-            Rotation = Quaternion.identity;
+            _fallbackPosition = FallbackStartPosition;
+            WorldPosition = _fallbackPosition;
+            WorldRotation = Quaternion.identity;
+            Position = WorldPosition;
+            Rotation = WorldRotation;
         }
 
         private void Update()
         {
             // unscaledDeltaTime: Time.timeScale non deve poter alterare una misura.
-            _time += Time.unscaledDeltaTime;
+            float deltaTime = Time.unscaledDeltaTime;
+            _time += deltaTime;
 
-            if (Mode == DriveMode.DeterministicSweep)
+            Vector3 worldPosition;
+            Quaternion worldRotation;
+
+            switch (Mode)
             {
-                float phase = _time * SweepHz * 2.0f * Mathf.PI;
-                float yaw = Mathf.Sin(phase) * SweepYawAmplitudeDeg;
-                float strafe = Mathf.Cos(phase * 0.5f) * SweepStrafeM;
+                case DriveMode.DeterministicSweep:
+                    StepSweep(out worldPosition, out worldRotation);
+                    break;
 
-                Position = Origin + new Vector3(strafe, 0.0f, 0.0f);
-                Rotation = Quaternion.Euler(0.0f, yaw, 0.0f);
+                case DriveMode.Manual:
+                    StepManual(deltaTime, out worldPosition, out worldRotation);
+                    break;
+
+                default: // FollowTransform
+                    ReadSource(out worldPosition, out worldRotation);
+                    break;
             }
-            else if (Mode == DriveMode.FollowTransform)
-            {
-                if (SourceTransform != null)
-                {
-                    // Trasformata di MONDO: Unreal riceve una pose assoluta.
-                    // Se il tuo rig e' annidato, questo tiene conto dei parent.
-                    Position = SourceTransform.position;
-                    Rotation = SourceTransform.rotation;
-                }
 
-                if (SourceCamera != null)
-                {
-                    // Prendere i parametri dalla Camera vera evita che l'immagine
-                    // di Unreal sia renderizzata con un FOV diverso da quello che
-                    // la logica di Unity crede di avere.
-                    FovYDeg = SourceCamera.fieldOfView;   // Unity usa il VERTICALE
-                    NearM = SourceCamera.nearClipPlane;
-                    FarM = SourceCamera.farClipPlane;
-                }
+            // Sweep e Manual scrivono davvero sulla camera: cosi' il quad, che le
+            // e' figlio, la segue, e tutto il resto della scena Unity vede la
+            // camera dove la vede Unreal.
+            if (Mode != DriveMode.FollowTransform && SourceTransform != null)
+            {
+                SourceTransform.SetPositionAndRotation(worldPosition, worldRotation);
+            }
+
+            WorldPosition = worldPosition;
+            WorldRotation = worldRotation;
+
+            if (SourceCamera != null)
+            {
+                // Prendere i parametri dalla Camera vera evita che Unreal
+                // renderizzi con un FOV diverso da quello che la logica di Unity
+                // crede di avere.
+                FovYDeg = SourceCamera.fieldOfView;   // Unity usa il VERTICALE
+                NearM = SourceCamera.nearClipPlane;
+                FarM = SourceCamera.farClipPlane;
+            }
+
+            ComputeRelativePose(worldPosition, worldRotation);
+        }
+
+        private void ReadSource(out Vector3 worldPosition, out Quaternion worldRotation)
+        {
+            if (SourceTransform != null)
+            {
+                // Transform di MONDO: se il tuo rig e' annidato, tiene conto dei parent.
+                worldPosition = SourceTransform.position;
+                worldRotation = SourceTransform.rotation;
             }
             else
             {
-                _manualYaw += Input.GetAxis("Mouse X") * LookSensitivity;
-                _manualPitch = Mathf.Clamp(_manualPitch - Input.GetAxis("Mouse Y") * LookSensitivity, -85.0f, 85.0f);
-                Rotation = Quaternion.Euler(_manualPitch, _manualYaw, 0.0f);
-
-                var input = new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical"));
-                _manualPosition += Rotation * input * (MoveSpeed * Time.unscaledDeltaTime);
-                Position = _manualPosition;
+                worldPosition = _fallbackPosition;
+                worldRotation = _fallbackRotation;
             }
+        }
+
+        private void StepSweep(out Vector3 worldPosition, out Quaternion worldRotation)
+        {
+            if (!_sweepBaseCaptured)
+            {
+                // Base dello sweep = dove hai messo la camera. Cosi' la inquadri
+                // dove vuoi e l'oscillazione parte da li'.
+                _sweepBasePosition = SourceTransform != null ? SourceTransform.position : _fallbackPosition;
+                _sweepBaseCaptured = true;
+            }
+
+            float phase = _time * SweepHz * 2.0f * Mathf.PI;
+            worldPosition = _sweepBasePosition + new Vector3(Mathf.Cos(phase * 0.5f) * SweepStrafeM, 0.0f, 0.0f);
+            worldRotation = Quaternion.Euler(0.0f, Mathf.Sin(phase) * SweepYawAmplitudeDeg, 0.0f);
+
+            _fallbackPosition = worldPosition;
+            _fallbackRotation = worldRotation;
+        }
+
+        private void StepManual(float deltaTime, out Vector3 worldPosition, out Quaternion worldRotation)
+        {
+            Vector3 current = SourceTransform != null ? SourceTransform.position : _fallbackPosition;
+
+            _manualYaw += Input.GetAxis("Mouse X") * LookSensitivity;
+            _manualPitch = Mathf.Clamp(_manualPitch - Input.GetAxis("Mouse Y") * LookSensitivity, -85.0f, 85.0f);
+            worldRotation = Quaternion.Euler(_manualPitch, _manualYaw, 0.0f);
+
+            var input = new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical"));
+            worldPosition = current + worldRotation * input * (MoveSpeed * deltaTime);
+
+            _fallbackPosition = worldPosition;
+            _fallbackRotation = worldRotation;
+            _sweepBaseCaptured = false;   // se torni allo sweep, riparte da qui
+        }
+
+        /// <summary>
+        /// Porta la pose di mondo nello spazio dell'origine. E' l'esatto
+        /// speculare di cio' che fa Unreal applicandola in relativo all'ancora.
+        /// </summary>
+        private void ComputeRelativePose(Vector3 worldPosition, Quaternion worldRotation)
+        {
+            if (OriginTransform == null)
+            {
+                Position = worldPosition;
+                Rotation = worldRotation;
+                return;
+            }
+
+            Vector3 scale = OriginTransform.lossyScale;
+            if (!_warnedAboutOriginScale &&
+                (Mathf.Abs(scale.x - 1.0f) > 0.001f || Mathf.Abs(scale.y - 1.0f) > 0.001f || Mathf.Abs(scale.z - 1.0f) > 0.001f))
+            {
+                // La scala e' deliberatamente ignorata: un'ancora scalata
+                // renderebbe ambiguo il significato dei metri spediti a Unreal.
+                Debug.LogWarning("[GpuShare] OriginTransform ha scala diversa da 1: viene ignorata. "
+                               + "Usa un'ancora non scalata, altrimenti le distanze spedite a Unreal non sono metri.");
+                _warnedAboutOriginScale = true;
+            }
+
+            Quaternion inverseOrigin = Quaternion.Inverse(OriginTransform.rotation);
+            Position = inverseOrigin * (worldPosition - OriginTransform.position);
+            Rotation = inverseOrigin * worldRotation;
         }
 
         /// <summary>Rapporto d'aspetto che entra nella pose.</summary>
         public float CurrentAspect()
         {
-            // Se stiamo seguendo una Camera vera, il suo aspect e' quello giusto:
-            // potrebbe renderizzare su una RenderTexture di formato diverso dalla
-            // finestra.
-            if (Mode == DriveMode.FollowTransform && SourceCamera != null && SourceCamera.aspect > 0.0f)
+            // Se seguiamo una Camera vera, il suo aspect e' quello giusto:
+            // potrebbe renderizzare su una RenderTexture di formato diverso
+            // dalla finestra.
+            if (SourceCamera != null && SourceCamera.aspect > 0.0f)
             {
                 return SourceCamera.aspect;
             }

@@ -82,6 +82,19 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Camera")
 	float DefaultFovYDeg = 60.0f;
 
+	/**
+	 * true  : la pose di Unity e' RELATIVA all'attore di cattura, che fa da
+	 *         ANCORA. L'origine del mondo di Unity coincide con la transform
+	 *         dell'attore nel mondo Unreal, e quella transform resta libera per
+	 *         chi la deve comandare (un componente esterno, un globe anchor...).
+	 *         E' il comportamento giusto per un world builder: Unity lavora in
+	 *         uno spazio locale piccolo e in metri, l'ancora lo colloca nel
+	 *         mondo grande.
+	 * false : la pose e' una transform di MONDO assoluta.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Camera")
+	bool bPoseRelativeToAnchor = true;
+
 	// ---- Rete --------------------------------------------------------------
 
 	UPROPERTY(config, EditAnywhere, Category = "Network", meta = (ClampMin = "1024", ClampMax = "65535"))

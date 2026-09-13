@@ -130,17 +130,24 @@ AGpuShareCaptureActor::AGpuShareCaptureActor()
 	// meccanismo con cui Unreal costruisce la gerarchia di componenti di
 	// default della classe. Chiamarlo altrove porta a crash o ad oggetti che
 	// non sopravvivono alla serializzazione.
+	// SceneRoot e' L'ANCORA: la transform dell'attore. Questo codice non la
+	// tocca mai, cosi' un componente esterno puo' muoverla liberamente.
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	RootComponent = SceneRoot;
 
+	// CameraRoot e' cio' che la pose di Unity muove, IN RELATIVO all'ancora.
+	CameraRoot = CreateDefaultSubobject<USceneComponent>(TEXT("CameraRoot"));
+	CameraRoot->SetupAttachment(SceneRoot);
+
+	// Le catture pendono da CameraRoot, non dall'ancora.
 	ColorCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("ColorCapture"));
-	ColorCapture->SetupAttachment(SceneRoot);
+	ColorCapture->SetupAttachment(CameraRoot);
 
 	DepthCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("DepthCapture"));
-	DepthCapture->SetupAttachment(SceneRoot);
+	DepthCapture->SetupAttachment(CameraRoot);
 
 	CubeCapture = CreateDefaultSubobject<USceneCaptureComponentCube>(TEXT("CubeCapture"));
-	CubeCapture->SetupAttachment(SceneRoot);
+	CubeCapture->SetupAttachment(CameraRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +169,7 @@ void AGpuShareCaptureActor::BeginPlay()
 	CachedRenderFovMarginDeg = Settings.RenderFovMarginDeg;
 	CachedAcquireTimeoutMs   = Settings.ProducerAcquireTimeoutMs;
 	CachedLogEveryNFrames    = Settings.LogEveryNFrames;
+	bCachedPoseRelativeToAnchor = Settings.bPoseRelativeToAnchor;
 	AppliedFovYDeg           = Settings.DefaultFovYDeg;
 	RenderFovYDeg            = AppliedFovYDeg + CachedRenderFovMarginDeg;
 
@@ -478,7 +486,21 @@ void AGpuShareCaptureActor::HandleHello(const FGpuShareClientInfo& ClientInfo)
 void AGpuShareCaptureActor::ApplyPose(const FGpuSharePoseState& Pose)
 {
 	// Un'unica conversione di coordinate, dentro FGpuSharePoseState.
-	SetActorTransform(Pose.ToUnrealTransform());
+	const FTransform PoseTransform = Pose.ToUnrealTransform();
+
+	if (bCachedPoseRelativeToAnchor)
+	{
+		// La pose e' RELATIVA all'ancora: la transform dell'attore resta
+		// intoccata e continua a essere comandata da chi la comanda.
+		// L'origine dello spazio di Unity coincide con l'attore.
+		CameraRoot->SetRelativeTransform(PoseTransform);
+	}
+	else
+	{
+		// Modalita' assoluta: la pose e' una transform di mondo.
+		CameraRoot->SetRelativeTransform(FTransform::Identity);
+		SetActorTransform(PoseTransform);
+	}
 
 	AppliedFovYDeg = Pose.FovYDeg;
 	RenderFovYDeg  = FMath::Min(179.0f, AppliedFovYDeg + CachedRenderFovMarginDeg);
@@ -574,10 +596,11 @@ void AGpuShareCaptureActor::EnqueuePublish(uint32 GroupId, const FGpuSharePoseSt
 		// Matrici DIAGNOSTICHE in convenzione Unreal. Vedi il commento in
 		// ShareProtocol.h: Unity NON deve usarle direttamente, ricostruisce la
 		// propria camera dall'eco della pose.
-		const FTransform ActorTransform = GetActorTransform();
+		// Transform di MONDO della camera, cioe' ancora * pose relativa.
+		const FTransform CameraTransform = CameraRoot->GetComponentTransform();
 		const FMatrix ViewMatrix =
-			FTranslationMatrix(-ActorTransform.GetLocation()) *
-			FInverseRotationMatrix(ActorTransform.GetRotation().Rotator()) *
+			FTranslationMatrix(-CameraTransform.GetLocation()) *
+			FInverseRotationMatrix(CameraTransform.GetRotation().Rotator()) *
 			FMatrix(FPlane(0, 0, 1, 0), FPlane(1, 0, 0, 0), FPlane(0, 1, 0, 0), FPlane(0, 0, 0, 1));
 
 		const float HalfFovRad = FMath::DegreesToRadians(RenderFovYDeg) * 0.5f;

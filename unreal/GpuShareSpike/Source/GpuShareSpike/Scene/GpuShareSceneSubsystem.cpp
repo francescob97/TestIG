@@ -181,9 +181,13 @@ void UGpuShareSceneSubsystem::BuildScene(UWorld& World)
 
 	// --- Attore di cattura --------------------------------------------------
 	{
+		// L'ancora nasce all'ORIGINE del mondo: cosi' l'origine di Unity e
+		// quella di Unreal coincidono, e la camera di Unity a (0, 2.5, -6) m
+		// finisce a (-600, 0, 250) cm, cioe' davanti al piano. Spostando questo
+		// attore sposti in blocco tutto lo spazio di Unity dentro il mondo.
 		CaptureActor = World.SpawnActor<AGpuShareCaptureActor>(
 			AGpuShareCaptureActor::StaticClass(),
-			FTransform(FRotator::ZeroRotator, FVector(-600.0, 0.0, 250.0)), FActorSpawnParameters());
+			FTransform::Identity, FActorSpawnParameters());
 	}
 
 	UE_LOG(LogGpuShare, Log, TEXT("Scena costruita: piano + %d cubi + luce + cielo + attore di cattura."), MovingCubes.Num());
