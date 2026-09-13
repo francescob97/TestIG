@@ -485,6 +485,15 @@ void AGpuShareCaptureActor::HandleHello(const FGpuShareClientInfo& ClientInfo)
 
 void AGpuShareCaptureActor::ApplyPose(const FGpuSharePoseState& Pose)
 {
+	if (CameraRoot == nullptr)
+	{
+		// Succede solo se il modulo C++ e' stato hot-reloadato male: CameraRoot
+		// e' un subobject aggiunto di recente e il CDO puo' restare indietro.
+		// Chiudi l'editor, ricompila da zero, riapri.
+		UE_LOG(LogGpuShare, Error, TEXT("CameraRoot nullo: ricompila il modulo C++ da editor chiuso."));
+		return;
+	}
+
 	// Un'unica conversione di coordinate, dentro FGpuSharePoseState.
 	const FTransform PoseTransform = Pose.ToUnrealTransform();
 
@@ -517,6 +526,23 @@ void AGpuShareCaptureActor::ApplyPose(const FGpuSharePoseState& Pose)
 	if (bCachedDepthEnabled)
 	{
 		DepthCapture->FOVAngle = HorizontalFovDeg;
+	}
+
+	if (!bLoggedFirstPose)
+	{
+		bLoggedFirstPose = true;
+		const FTransform AnchorTransform = GetActorTransform();
+		const FTransform CameraWorld = CameraRoot->GetComponentTransform();
+		UE_LOG(LogGpuShare, Log,
+			TEXT("Prima pose applicata.\n")
+			TEXT("  ancora (attore) : %s\n")
+			TEXT("  pose relativa   : %s\n")
+			TEXT("  camera nel mondo: %s\n")
+			TEXT("  fov verticale   : %.1f gradi, near %.1f cm"),
+			*AnchorTransform.GetLocation().ToString(),
+			*PoseTransform.GetLocation().ToString(),
+			*CameraWorld.GetLocation().ToString(),
+			AppliedFovYDeg, AppliedNearCm);
 	}
 
 #if GPUSHARE_USE_CUSTOM_NEAR_CLIP

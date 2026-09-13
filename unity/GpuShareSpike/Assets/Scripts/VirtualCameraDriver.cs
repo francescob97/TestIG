@@ -42,6 +42,10 @@ using UnityEngine;
 
 namespace GpuShareSpike
 {
+    // -200: DEVE girare prima di ShareClient (che e' a -100), altrimenti
+    // ShareClient spedisce la pose calcolata al frame PRECEDENTE e regala un
+    // frame intero di latenza proprio allo strumento che serve a misurarla.
+    [DefaultExecutionOrder(-200)]
     public sealed class VirtualCameraDriver : MonoBehaviour
     {
         public enum DriveMode

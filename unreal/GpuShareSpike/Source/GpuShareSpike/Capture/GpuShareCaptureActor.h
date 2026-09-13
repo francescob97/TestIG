@@ -160,6 +160,7 @@ private:
 	float RenderFovYDeg = 60.0f;
 	float AppliedNearCm = 10.0f;
 
+	bool bLoggedFirstPose = false;
 	bool bSurfacesReady = false;
 	bool bFatalError = false;
 };

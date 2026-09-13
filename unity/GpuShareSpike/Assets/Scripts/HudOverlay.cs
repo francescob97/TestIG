@@ -88,6 +88,30 @@ namespace GpuShareSpike
             _text.AppendLine($"  frame nuovi    {tracker.ConsumeSuccess,7}");
             _text.AppendLine($"  ritardo lettura{tracker.ReadbackLagEvents,7} eventi (non entra nella misura)");
 
+            // Questa sezione risponde alla domanda "da che lato sta il problema?".
+            // Se questi numeri cambiano ma l'immagine e' nera, il problema e' a
+            // valle (Unreal, o il trasporto). Se NON cambiano, il problema e'
+            // qui: la pose non viene nemmeno prodotta.
+            _text.AppendLine();
+            _text.AppendLine("<b>POSE SPEDITA</b>  (spazio Unity, relativa all'origine)");
+            var driver = _client.Driver;
+            if (driver != null)
+            {
+                Vector3 euler = driver.Rotation.eulerAngles;
+                _text.AppendLine($"  modo           {driver.Mode}");
+                _text.AppendLine($"  posizione      ({driver.Position.x,7:F2},{driver.Position.y,7:F2},{driver.Position.z,7:F2}) m");
+                _text.AppendLine($"  rotazione      ({euler.x,7:F1},{euler.y,7:F1},{euler.z,7:F1}) gradi");
+                _text.AppendLine($"  fov verticale  {driver.FovYDeg,7:F1} gradi   near {driver.NearM:F2} m");
+                if (driver.SourceTransform == null)
+                {
+                    _text.AppendLine("  <color=#ffd166>SourceTransform non assegnato</color>");
+                }
+                if (driver.OriginTransform != null)
+                {
+                    _text.AppendLine($"  origine        {driver.OriginTransform.name} (pose relativa a questo)");
+                }
+            }
+
             _text.AppendLine();
             _text.AppendLine("<b>CANALE DI CONTROLLO</b>");
             if (channel != null)
@@ -113,7 +137,7 @@ namespace GpuShareSpike
                 _text.AppendLine($"  cube    atlas {_client.CubeAtlasTexture.width}x{_client.CubeAtlasTexture.height}");
             }
 
-            Draw(520.0f);
+            Draw(560.0f);
         }
 
         private void Draw(float width)

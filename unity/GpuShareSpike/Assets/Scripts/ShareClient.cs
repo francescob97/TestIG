@@ -65,6 +65,7 @@ namespace GpuShareSpike
 
         // --- stato ---------------------------------------------------------
         public ControlChannelClient Channel { get; private set; }
+        public VirtualCameraDriver Driver => _driver;
         public LatencyTracker Tracker { get; } = new LatencyTracker();
         public string FatalError { get; private set; }
         public string StatusLine { get; private set; } = "avvio...";

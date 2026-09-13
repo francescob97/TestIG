@@ -117,6 +117,53 @@ nativo, lavora su un **Player buildato**.
 
 ## Immagine
 
+### Tutto nero dopo aver aggiornato il codice
+
+**Prima di tutto: hai ricompilato il modulo C++ di Unreal?** È la causa numero
+uno quando qualcosa smette di funzionare dopo un aggiornamento. Se il modulo non
+compila, l'editor si apre lo stesso ma **senza il codice del gioco**: niente
+scena, niente attore di cattura, niente socket UDP. Unity non riceve l'handshake
+e resta nero.
+
+Il ciclo sicuro è: **chiudi l'editor → ricompila da Visual Studio → riapri**.
+L'hot-reload non basta quando cambiano i componenti di una classe (per esempio
+l'aggiunta di `CameraRoot`): il Class Default Object resta indietro e i
+componenti arrivano nulli a runtime.
+
+Poi segui questa scaletta: **ogni gradino ti dice da che lato è il problema.**
+
+| Guarda | Se è a posto | Se non lo è |
+|---|---|---|
+| **1.** HUD di Unity, riga `stato` | `in esecuzione` → vai al 2 | `in attesa dell'handshake` → il problema è in Unreal: il modulo non è partito. Vai al log di Unreal. |
+| **2.** HUD, sezione **POSE SPEDITA** | I numeri cambiano quando muovi/ruoti → vai al 3 | I numeri sono fermi → il problema è **in Unity**: il driver non produce pose. Controlla `Mode` e `Source Transform`. |
+| **3.** HUD, `status ricevuti` | Sale → vai al 4 | Fermo a 0 → Unreal riceve ma non pubblica. Log di Unreal. |
+| **4.** HUD, `frame nuovi` e `latenza` | Salgono → il trasporto funziona, il problema è nella **presentazione**: vai alla sezione sullo schermo nero qui sotto | Fermi → il consume fallisce sempre. Vedi la sezione sugli adapter. |
+| **5.** Log di Unreal, riga `Prima pose applicata` | Ti dice **dove è finita davvero la camera** nel mondo: ancora, pose relativa, posizione di mondo | Se la posizione di mondo è lontanissima dalla scena, stai guardando il vuoto: è nero perché non c'è niente da vedere. |
+
+Il gradino 5 è quello che risolve i casi più insidiosi. Esempio tipico: la tua
+camera di Unity sta a `(0, 1, -10)`, che in Unreal diventa `(-1000, 0, 100)` cm.
+Se l'ancora è a sua volta spostata, la camera finisce fuori dalla scena di prova
+(il piano è 20 m, quindi ±1000 cm) e inquadra il nulla.
+
+**Rimedio rapido per riportare la camera sulla scena:** metti la tua camera di
+Unity vicino a `(0, 2.5, -6)`, che in Unreal è `(-600, 0, 250)` cm: davanti al
+piano, all'altezza giusta, con i cubi in campo.
+
+### La camera di Unreal non sembra muoversi
+
+Attenzione: nella **finestra del player Unreal** non vedi *mai* muoversi la
+camera di cattura. Quella finestra mostra la vista del pawn di default; le
+`SceneCapture` sono invisibili e non disegnano nessun gizmo in un build
+standalone.
+
+Per verificare davvero che si muova:
+
+- la riga `Prima pose applicata` nel log dice dove è finita;
+- in PIE, seleziona l'attore `GpuShareCaptureActor` nel World Outliner: il
+  frustum della `SceneCapture` viene disegnato e lo vedi muoversi;
+- oppure, più semplice: se l'immagine che arriva a Unity cambia quando ruoti,
+  si sta muovendo.
+
 ### Schermo nero, ma l'HUD dice "in esecuzione" e i contatori salgono
 
 Il trasporto funziona, il problema è nella presentazione.
