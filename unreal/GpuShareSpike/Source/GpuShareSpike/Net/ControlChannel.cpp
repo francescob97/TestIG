@@ -132,6 +132,18 @@ void FGpuShareControlChannel::HandlePacket(const uint8* Data, int32 Size, const 
 	if (!GpuShareHeaderIsValid(&Header))
 	{
 		BadPacketCount.fetch_add(1, std::memory_order_relaxed);
+
+		// Magic giusto ma versione diversa = i due lati sono stati compilati da
+		// commit diversi. E' un errore facilissimo da fare e il sintomo (Unity
+		// che resta "in attesa dell'handshake") non lo spiegherebbe: lo diciamo.
+		if (Header.magic == GPUSHARE_PROTOCOL_MAGIC && !bVersionMismatchLogged)
+		{
+			bVersionMismatchLogged = true;
+			UE_LOG(LogGpuShare, Error,
+				TEXT("Pacchetto con protocollo v%u, Unreal parla v%u: ricompila il lato rimasto indietro ")
+				TEXT("(plugin nativo + script Unity, oppure il modulo Unreal)."),
+				(uint32)Header.version, (uint32)GPUSHARE_PROTOCOL_VERSION);
+		}
 		return;
 	}
 
@@ -160,14 +172,19 @@ void FGpuShareControlChannel::HandlePacket(const uint8* Data, int32 Size, const 
 			PendingHello.AdapterLuidLow  = Hello.adapter_luid_low;
 			PendingHello.AdapterLuidHigh = Hello.adapter_luid_high;
 			PendingHello.Flags           = Hello.flags;
+			PendingHello.ViewCount       = FMath::Clamp<uint32>(Hello.view_count, 1u, (uint32)GPUSHARE_MAX_VIEWS);
+			PendingHello.ViewWidth       = Hello.view_width;
+			PendingHello.ViewHeight      = Hello.view_height;
+			PendingHello.RequestId       = Hello.request_id;
 			bHelloPending = true;
 		}
 
 		bHasClient.store(true, std::memory_order_relaxed);
 
 		UE_LOG(LogGpuShare, Log,
-			TEXT("HELLO da Unity: pid=%u LUID=%u:%d flags=0x%X"),
-			Hello.unity_pid, Hello.adapter_luid_low, Hello.adapter_luid_high, Hello.flags);
+			TEXT("HELLO da Unity: pid=%u LUID=%u:%d flags=0x%X viste=%u risoluzione=%ux%u richiesta=%u"),
+			Hello.unity_pid, Hello.adapter_luid_low, Hello.adapter_luid_high, Hello.flags,
+			Hello.view_count, Hello.view_width, Hello.view_height, Hello.request_id);
 		break;
 	}
 
@@ -183,15 +200,29 @@ void FGpuShareControlChannel::HandlePacket(const uint8* Data, int32 Size, const 
 		FMemory::Memcpy(&Pose, Data, sizeof(Pose));
 
 		FGpuSharePoseState NewPose;
-		NewPose.FrameId       = Pose.frame_id;
-		NewPose.QpcSend       = Pose.qpc;
-		NewPose.UnityPosition = FVector(Pose.position[0], Pose.position[1], Pose.position[2]);
-		NewPose.UnityRotation = FQuat(Pose.rotation[0], Pose.rotation[1], Pose.rotation[2], Pose.rotation[3]);
-		NewPose.FovYDeg       = Pose.fov_y_deg;
-		NewPose.Aspect        = Pose.aspect;
-		NewPose.NearM         = Pose.near_m;
-		NewPose.FarM          = Pose.far_m;
-		NewPose.bValid        = true;
+		NewPose.FrameId   = Pose.frame_id;
+		NewPose.QpcSend   = Pose.qpc;
+		NewPose.ViewCount = (int32)FMath::Clamp<uint32>(Pose.view_count, 1u, (uint32)GPUSHARE_MAX_VIEWS);
+		for (int32 ViewIndex = 0; ViewIndex < GPUSHARE_MAX_VIEWS; ++ViewIndex)
+		{
+			const GpuShareView& Src = Pose.views[ViewIndex];
+			FGpuShareViewState& Dst = NewPose.Views[ViewIndex];
+			Dst.UnityPosition = FVector(Src.position[0], Src.position[1], Src.position[2]);
+			Dst.UnityRotation = FQuat(Src.rotation[0], Src.rotation[1], Src.rotation[2], Src.rotation[3]);
+
+			// Tangenti degeneri (zero, o invertite) produrrebbero una matrice
+			// singolare e una cattura nera senza errori: le rifiutiamo qui.
+			if (Src.tan_right > Src.tan_left && Src.tan_up > Src.tan_down)
+			{
+				Dst.TanLeft  = Src.tan_left;
+				Dst.TanRight = Src.tan_right;
+				Dst.TanDown  = Src.tan_down;
+				Dst.TanUp    = Src.tan_up;
+			}
+		}
+		NewPose.NearM  = Pose.near_m;
+		NewPose.FarM   = Pose.far_m;
+		NewPose.bValid = true;
 
 		{
 			// LATEST-WINS: sovrascrittura pura, nessuna coda.

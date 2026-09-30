@@ -54,6 +54,14 @@ dal modulo Unreal. Se cambi il protocollo, cambialo lì e basta: gli
 `static_assert` sui `sizeof` fanno fallire la compilazione di entrambi i lati
 se qualcosa non torna.
 
+## ABI v2: l'id dell'evento porta i dati
+
+Dalla versione 2 l'id passato a `GL.IssuePluginEvent` per i consume codifica
+tipo, indice del buffer, richiesta di drenaggio e sequenza del frame (layout in
+`src/NativeApi.h`). Il C# lo costruisce con `NativeBridge.EncodeConsume`. Se la
+DLL e gli script non hanno la stessa versione, `ShareClient` si ferma all'avvio
+con un messaggio esplicito.
+
 ## Convenzione di thread
 
 - Tutte le funzioni `GpuShare_*` si chiamano dal **main thread** di Unity.

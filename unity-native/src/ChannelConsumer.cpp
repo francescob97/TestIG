@@ -221,6 +221,55 @@ bool ChannelConsumer::GetChannelSize(uint32_t channelId, uint32_t& outWidth, uin
     return false;
 }
 
+int32_t ChannelConsumer::CollectGroupMembers(uint32_t groupId, int32_t (&members)[GPUSHARE_MAX_CHANNELS]) const
+{
+    int32_t memberCount = 0;
+    for (size_t i = 0; i < m_channels.size() && memberCount < GPUSHARE_MAX_CHANNELS; ++i)
+    {
+        if (m_channels[i].desc.group_id == groupId)
+        {
+            members[memberCount++] = (int32_t)i;
+        }
+    }
+    return memberCount;
+}
+
+bool ChannelConsumer::AcquireMembers(const int32_t* members, int32_t memberCount, uint32_t bufferIndex,
+                                     uint64_t key, uint32_t timeoutMs)
+{
+    // Acquisizione nello STESSO ORDINE usato dal produttore (indice di canale
+    // crescente). Con chiavi diverse tra produttore e consumatore un deadlock
+    // da ordine di lock non sarebbe comunque possibile, ma tenere un ordine
+    // fisso e' igiene che costa zero.
+    int32_t acquired = 0;
+    for (int32_t k = 0; k < memberCount; ++k)
+    {
+        IDXGIKeyedMutex* mutex = m_channels[(size_t)members[k]].buffers[bufferIndex].keyedMutex.Get();
+        const HRESULT hr = mutex->AcquireSync(key, timeoutMs);
+
+        if (hr != S_OK && hr != (HRESULT)WAIT_ABANDONED)
+        {
+            // Rollback: rilasciamo con la STESSA chiave quelli gia' presi, cosi'
+            // tornano esattamente nello stato di prima.
+            for (int32_t r = 0; r < acquired; ++r)
+            {
+                m_channels[(size_t)members[r]].buffers[bufferIndex].keyedMutex->ReleaseSync(key);
+            }
+            return false;
+        }
+        ++acquired;
+    }
+    return true;
+}
+
+void ChannelConsumer::ReleaseMembers(const int32_t* members, int32_t memberCount, uint32_t bufferIndex, uint64_t key)
+{
+    for (int32_t k = 0; k < memberCount; ++k)
+    {
+        m_channels[(size_t)members[k]].buffers[bufferIndex].keyedMutex->ReleaseSync(key);
+    }
+}
+
 bool ChannelConsumer::ConsumeGroup(uint32_t groupId, uint32_t readyIndex, uint32_t timeoutMs,
                                    int64_t& outQpcConsume)
 {
@@ -231,43 +280,18 @@ bool ChannelConsumer::ConsumeGroup(uint32_t groupId, uint32_t readyIndex, uint32
         return false;
     }
 
-    // Indici dei canali che appartengono a questo gruppo.
     int32_t members[GPUSHARE_MAX_CHANNELS];
-    int32_t memberCount = 0;
-    for (size_t i = 0; i < m_channels.size(); ++i)
-    {
-        if (m_channels[i].desc.group_id == groupId)
-        {
-            members[memberCount++] = (int32_t)i;
-        }
-    }
+    const int32_t memberCount = CollectGroupMembers(groupId, members);
     if (memberCount == 0)
     {
         return false;
     }
 
-    // Acquisizione nello STESSO ORDINE usato dal produttore (indice di canale
-    // crescente). Con chiavi diverse tra produttore e consumatore un deadlock
-    // da ordine di lock non sarebbe comunque possibile, ma tenere un ordine
-    // fisso e' igiene che costa zero.
-    int32_t acquired = 0;
-    for (int32_t k = 0; k < memberCount; ++k)
+    if (!AcquireMembers(members, memberCount, readyIndex, GPUSHARE_KEY_CONSUMER, timeoutMs))
     {
-        IDXGIKeyedMutex* mutex = m_channels[(size_t)members[k]].buffers[readyIndex].keyedMutex.Get();
-        const HRESULT hr = mutex->AcquireSync(GPUSHARE_KEY_CONSUMER, timeoutMs);
-
-        if (hr != S_OK && hr != (HRESULT)WAIT_ABANDONED)
-        {
-            // Timeout: il produttore non ha ancora pubblicato su questo buffer.
-            // Rollback e ritorno immediato: il chiamante ripresentera' il frame
-            // precedente e contera' una ripetizione.
-            for (int32_t r = 0; r < acquired; ++r)
-            {
-                m_channels[(size_t)members[r]].buffers[readyIndex].keyedMutex->ReleaseSync(GPUSHARE_KEY_CONSUMER);
-            }
-            return false;
-        }
-        ++acquired;
+        // Timeout: il produttore non ha ancora rilasciato questo buffer.
+        // Il chiamante ripresentera' il frame precedente.
+        return false;
     }
 
     // Timbro preso appena TUTTI i mutex del gruppo sono nostri: e' il momento
@@ -281,10 +305,32 @@ bool ChannelConsumer::ConsumeGroup(uint32_t groupId, uint32_t readyIndex, uint32
     }
 
     // Rilasciando con KEY_PRODUCER restituiamo il buffer a Unreal.
-    for (int32_t k = 0; k < memberCount; ++k)
+    ReleaseMembers(members, memberCount, readyIndex, GPUSHARE_KEY_PRODUCER);
+    return true;
+}
+
+bool ChannelConsumer::DrainGroup(uint32_t groupId, uint32_t bufferIndex)
+{
+    if (!m_configured || bufferIndex >= GPUSHARE_BUFFERS_PER_CHANNEL)
     {
-        m_channels[(size_t)members[k]].buffers[readyIndex].keyedMutex->ReleaseSync(GPUSHARE_KEY_PRODUCER);
+        return false;
     }
 
+    int32_t members[GPUSHARE_MAX_CHANNELS];
+    const int32_t memberCount = CollectGroupMembers(groupId, members);
+    if (memberCount == 0)
+    {
+        return false;
+    }
+
+    // Timeout 0: se il buffer non e' nello stato "consumatore" non c'e' niente
+    // da drenare, e non vogliamo aspettare nulla.
+    if (!AcquireMembers(members, memberCount, bufferIndex, GPUSHARE_KEY_CONSUMER, 0))
+    {
+        return false;
+    }
+
+    // Nessuna copia: il contenuto e' un frame vecchio che non mostreremo.
+    ReleaseMembers(members, memberCount, bufferIndex, GPUSHARE_KEY_PRODUCER);
     return true;
 }

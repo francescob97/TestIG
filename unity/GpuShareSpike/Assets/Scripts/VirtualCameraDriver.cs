@@ -34,8 +34,11 @@
 //                       scostamento angolare costante, e confrontabile tra una
 //                       misura e l'altra: col mouse in mano non confronti niente.
 //    FollowTransform    non muove niente, LEGGE e basta. Usala quando a muovere
-//                       la camera e' altro: un character controller, Cinemachine,
-//                       un XR rig.
+//                       la camera e' altro: un character controller, Cinemachine.
+//
+//  IN VR QUESTO COMPONENTE E' SPENTO: la camera la muove il visore (Tracked
+//  Pose Driver) e le pose degli occhi le legge ShareClient direttamente dal
+//  sottosistema XR. L'OriginTransform invece vale anche in VR.
 // ============================================================================
 
 using UnityEngine;
@@ -201,11 +204,13 @@ namespace GpuShareSpike
         {
             Vector3 current = SourceTransform != null ? SourceTransform.position : _fallbackPosition;
 
-            _manualYaw += Input.GetAxis("Mouse X") * LookSensitivity;
-            _manualPitch = Mathf.Clamp(_manualPitch - Input.GetAxis("Mouse Y") * LookSensitivity, -85.0f, 85.0f);
+            // SafeInput: se il progetto e' passato al solo Input System (succede
+            // installando OpenXR) l'Input vecchio lancerebbe eccezioni a ogni frame.
+            _manualYaw += SafeInput.GetAxis("Mouse X") * LookSensitivity;
+            _manualPitch = Mathf.Clamp(_manualPitch - SafeInput.GetAxis("Mouse Y") * LookSensitivity, -85.0f, 85.0f);
             worldRotation = Quaternion.Euler(_manualPitch, _manualYaw, 0.0f);
 
-            var input = new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical"));
+            var input = new Vector3(SafeInput.GetAxis("Horizontal"), 0.0f, SafeInput.GetAxis("Vertical"));
             worldPosition = current + worldRotation * input * (MoveSpeed * deltaTime);
 
             _fallbackPosition = worldPosition;
@@ -237,9 +242,10 @@ namespace GpuShareSpike
                 _warnedAboutOriginScale = true;
             }
 
-            Quaternion inverseOrigin = Quaternion.Inverse(OriginTransform.rotation);
-            Position = inverseOrigin * (worldPosition - OriginTransform.position);
-            Rotation = inverseOrigin * worldRotation;
+            // Stessa identica conversione usata dal percorso VR (ViewMath).
+            ViewMath.ToOriginSpace(OriginTransform, worldPosition, worldRotation, out Vector3 position, out Quaternion rotation);
+            Position = position;
+            Rotation = rotation;
         }
 
         /// <summary>Rapporto d'aspetto che entra nella pose.</summary>

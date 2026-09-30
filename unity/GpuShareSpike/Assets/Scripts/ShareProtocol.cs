@@ -25,19 +25,21 @@
 using System;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
+using UnityEngine;
 
 namespace GpuShareSpike
 {
     public static class Protocol
     {
-        public const uint  Magic   = 0x47535031u;  // 'GSP1'
-        public const ushort Version = 1;
+        public const uint   Magic   = 0x47535031u;  // 'GSP1'
+        public const ushort Version = 2;            // v2: viste multiple (VR stereo)
 
         public const uint MarkerMagic  = 0x4D524B31u;  // 'MRK1'
         public const int  MarkerPixels = 8;
         public const int  MarkerBytes  = 32;
 
-        public const int MaxChannels        = 4;
+        public const int MaxChannels        = 6;
+        public const int MaxViews           = 2;
         public const int BuffersPerChannel  = 2;
         public const int GroupCount         = 2;
 
@@ -48,10 +50,11 @@ namespace GpuShareSpike
 
         // Dimensioni dei pacchetti, da tenere allineate con gli static_assert C.
         public const int HeaderSize      = 8;
-        public const int HelloSize       = 24;
+        public const int HelloSize       = 40;
         public const int ChannelDescSize = 40;
-        public const int HandshakeSize   = 256;
-        public const int PoseSize        = 68;
+        public const int HandshakeSize   = 344;
+        public const int ViewSize        = 44;
+        public const int PoseSize        = 128;
         public const int GroupStatusSize = 40;
         public const int StatusSize      = 256;
         public const int ByeSize         = 16;
@@ -67,10 +70,15 @@ namespace GpuShareSpike
 
         public enum ChannelId : uint
         {
-            Color = 0,
-            Depth = 1,
-            Cube  = 2,
+            Color  = 0,   // vista 0 (mono, o occhio sinistro); porta il marker
+            Depth  = 1,
+            Cube   = 2,
+            Color1 = 3,   // vista 1 (occhio destro), solo in stereo
+            Depth1 = 4,
         }
+
+        public static ChannelId ColorChannelForView(int view) => view == 0 ? ChannelId.Color : ChannelId.Color1;
+        public static ChannelId DepthChannelForView(int view) => view == 0 ? ChannelId.Depth : ChannelId.Depth1;
 
         public enum GroupId : uint
         {
@@ -107,6 +115,13 @@ namespace GpuShareSpike
             Shutdown    = 4,
         }
 
+        public enum HeaderResult
+        {
+            Ok,
+            NotOurs,          // magic sbagliato: non e' un nostro pacchetto
+            VersionMismatch,  // e' nostro, ma dell'altra versione del protocollo
+        }
+
         // --------------------------------------------------------------------
         //  Header
         // --------------------------------------------------------------------
@@ -118,35 +133,42 @@ namespace GpuShareSpike
             BinaryPrimitives.WriteUInt16LittleEndian(buffer.Slice(6, 2), (ushort)type);
         }
 
-        public static bool TryReadHeader(ReadOnlySpan<byte> buffer, out PacketType type)
+        public static HeaderResult ReadHeader(ReadOnlySpan<byte> buffer, out PacketType type, out ushort version)
         {
             type = default;
-            if (buffer.Length < HeaderSize) return false;
+            version = 0;
+            if (buffer.Length < HeaderSize) return HeaderResult.NotOurs;
 
             uint magic = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(0, 4));
-            ushort version = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(4, 2));
-            if (magic != Magic || version != Version) return false;
+            version = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(4, 2));
+            if (magic != Magic) return HeaderResult.NotOurs;
+            if (version != Version) return HeaderResult.VersionMismatch;
 
             type = (PacketType)BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(6, 2));
-            return true;
+            return HeaderResult.Ok;
         }
 
         // --------------------------------------------------------------------
-        //  HELLO  (Unity -> Unreal)
+        //  HELLO  (Unity -> Unreal)  --  40 byte
         // --------------------------------------------------------------------
 
-        public static int WriteHello(Span<byte> buffer, uint unityPid, uint luidLow, int luidHigh, HelloFlags flags)
+        public static int WriteHello(Span<byte> buffer, uint unityPid, uint luidLow, int luidHigh, HelloFlags flags,
+                                     int viewCount, int viewWidth, int viewHeight, uint requestId)
         {
             WriteHeader(buffer, PacketType.Hello);
             BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(8, 4),  unityPid);
             BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(12, 4), luidLow);
             BinaryPrimitives.WriteInt32LittleEndian (buffer.Slice(16, 4), luidHigh);
             BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(20, 4), (uint)flags);
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(24, 4), (uint)Mathf.Clamp(viewCount, 1, MaxViews));
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(28, 4), (uint)Mathf.Max(0, viewWidth));
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(32, 4), (uint)Mathf.Max(0, viewHeight));
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(36, 4), requestId);
             return HelloSize;
         }
 
         // --------------------------------------------------------------------
-        //  BYE  (Unity -> Unreal)
+        //  BYE  (Unity -> Unreal)  --  16 byte
         // --------------------------------------------------------------------
 
         public static int WriteBye(Span<byte> buffer, uint unityPid)
@@ -158,40 +180,75 @@ namespace GpuShareSpike
         }
 
         // --------------------------------------------------------------------
-        //  POSE  (Unity -> Unreal)
+        //  POSE  (Unity -> Unreal)  --  128 byte
         //
-        //  I valori sono in SPAZIO UNITY (metri, Y-up). E' Unreal a convertire,
-        //  in un unico punto del suo codice.
+        //  Posizione e rotazione in SPAZIO UNITY (metri, Y-up), relative
+        //  all'origine: e' Unreal a convertire, in un unico punto del suo codice.
+        //  Il frustum viaggia come quattro TANGENTI (sinistra e basso negative):
+        //  e' l'unica forma che descrive un occhio di un visore, che ha un
+        //  frustum asimmetrico, e non dipende dalle convenzioni di clip space.
         // --------------------------------------------------------------------
 
-        public static int WritePose(
-            Span<byte> buffer, ulong frameId, long qpc,
-            float px, float py, float pz,
-            float qx, float qy, float qz, float qw,
-            float fovYDeg, float aspect, float nearM, float farM)
+        public struct ViewPose
         {
+            public Vector3    Position;   // metri, relativa all'origine
+            public Quaternion Rotation;
+            public float TanLeft;         // negativa
+            public float TanRight;
+            public float TanDown;         // negativa
+            public float TanUp;
+
+            public static ViewPose Symmetric(Vector3 position, Quaternion rotation, float fovYDeg, float aspect)
+            {
+                float tanUp = Mathf.Tan(fovYDeg * 0.5f * Mathf.Deg2Rad);
+                float tanRight = tanUp * aspect;
+                return new ViewPose
+                {
+                    Position = position, Rotation = rotation,
+                    TanLeft = -tanRight, TanRight = tanRight, TanDown = -tanUp, TanUp = tanUp,
+                };
+            }
+        }
+
+        public static int WritePose(Span<byte> buffer, ulong frameId, long qpc,
+                                    ViewPose[] views, int viewCount, float nearM, float farM)
+        {
+            buffer.Slice(0, PoseSize).Clear();
             WriteHeader(buffer, PacketType.Pose);
             BinaryPrimitives.WriteUInt64LittleEndian(buffer.Slice(8, 8),  frameId);
             BinaryPrimitives.WriteInt64LittleEndian (buffer.Slice(16, 8), qpc);
 
-            WriteSingle(buffer, 24, px);
-            WriteSingle(buffer, 28, py);
-            WriteSingle(buffer, 32, pz);
+            viewCount = Mathf.Clamp(viewCount, 1, MaxViews);
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(24, 4), (uint)viewCount);
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(28, 4), 0);   // flags
 
-            WriteSingle(buffer, 36, qx);
-            WriteSingle(buffer, 40, qy);
-            WriteSingle(buffer, 44, qz);
-            WriteSingle(buffer, 48, qw);
+            for (int i = 0; i < MaxViews; ++i)
+            {
+                // Le viste oltre view_count vengono comunque riempite con la
+                // vista 0: Unreal le ignora, ma cosi' non contengono mai zeri
+                // (tangenti nulle = frustum degenere).
+                ViewPose v = views[i < viewCount ? i : 0];
+                int o = 32 + i * ViewSize;
+                WriteSingle(buffer, o + 0,  v.Position.x);
+                WriteSingle(buffer, o + 4,  v.Position.y);
+                WriteSingle(buffer, o + 8,  v.Position.z);
+                WriteSingle(buffer, o + 12, v.Rotation.x);
+                WriteSingle(buffer, o + 16, v.Rotation.y);
+                WriteSingle(buffer, o + 20, v.Rotation.z);
+                WriteSingle(buffer, o + 24, v.Rotation.w);
+                WriteSingle(buffer, o + 28, v.TanLeft);
+                WriteSingle(buffer, o + 32, v.TanRight);
+                WriteSingle(buffer, o + 36, v.TanDown);
+                WriteSingle(buffer, o + 40, v.TanUp);
+            }
 
-            WriteSingle(buffer, 52, fovYDeg);
-            WriteSingle(buffer, 56, aspect);
-            WriteSingle(buffer, 60, nearM);
-            WriteSingle(buffer, 64, farM);
+            WriteSingle(buffer, 120, nearM);
+            WriteSingle(buffer, 124, farM);
             return PoseSize;
         }
 
         // --------------------------------------------------------------------
-        //  HANDSHAKE  (Unreal -> Unity)
+        //  HANDSHAKE  (Unreal -> Unity)  --  344 byte
         // --------------------------------------------------------------------
 
         public struct HandshakeInfo
@@ -200,6 +257,9 @@ namespace GpuShareSpike
             public uint AdapterLuidLow;
             public int  AdapterLuidHigh;
             public HandleMode Mode;
+            public int  ViewCount;
+            public uint ConfigId;
+            public uint RequestId;
             public string NamePrefix;
             public NativeChannelDesc[] Channels;
         }
@@ -214,17 +274,19 @@ namespace GpuShareSpike
             info.AdapterLuidHigh = BinaryPrimitives.ReadInt32LittleEndian (buffer.Slice(16, 4));
 
             uint channelCount = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(20, 4));
-            info.Mode          = (HandleMode)BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(24, 4));
-            // offset 28: reserved0
+            info.Mode         = (HandleMode)BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(24, 4));
+            info.ViewCount    = (int)BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(28, 4));
+            info.ConfigId     = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(32, 4));
+            info.RequestId    = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(36, 4));
 
-            info.NamePrefix = ReadFixedAscii(buffer.Slice(32, 64));
+            info.NamePrefix = ReadFixedAscii(buffer.Slice(40, 64));
 
             if (channelCount > MaxChannels) channelCount = MaxChannels;
             info.Channels = new NativeChannelDesc[channelCount];
 
             for (int i = 0; i < channelCount; ++i)
             {
-                int o = 96 + i * ChannelDescSize;
+                int o = 104 + i * ChannelDescSize;
                 info.Channels[i] = new NativeChannelDesc
                 {
                     ChannelId  = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(o + 0, 4)),
@@ -242,7 +304,7 @@ namespace GpuShareSpike
         }
 
         // --------------------------------------------------------------------
-        //  STATUS  (Unreal -> Unity)
+        //  STATUS  (Unreal -> Unity)  --  256 byte
         // --------------------------------------------------------------------
 
         public struct GroupStatus
@@ -260,6 +322,7 @@ namespace GpuShareSpike
         {
             public ulong UeFrameCounter;
             public long  Qpc;
+            public uint  ConfigId;
             public GroupStatus[] Groups;
             public float AppliedFovYDeg;
             public float AppliedNearCm;
@@ -274,7 +337,8 @@ namespace GpuShareSpike
 
             info.UeFrameCounter = BinaryPrimitives.ReadUInt64LittleEndian(buffer.Slice(8, 8));
             info.Qpc            = BinaryPrimitives.ReadInt64LittleEndian (buffer.Slice(16, 8));
-            // offset 24: group_count, 28: reserved0
+            // offset 24: group_count
+            info.ConfigId       = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(28, 4));
 
             info.Groups = new GroupStatus[GroupCount];
             for (int i = 0; i < GroupCount; ++i)
@@ -349,8 +413,8 @@ namespace GpuShareSpike
                 error = $"NativeMarker e' {markerSize} byte, atteso {MarkerBytes}";
             else if (infoSize != 56)
                 error = $"NativeFrameInfo e' {infoSize} byte, atteso 56";
-            else if (statsSize != 48)
-                error = $"NativeStats e' {statsSize} byte, atteso 48";
+            else if (statsSize != 64)
+                error = $"NativeStats e' {statsSize} byte, atteso 64";
             else if (!System.Diagnostics.Stopwatch.IsHighResolution)
                 error = "Stopwatch non e' ad alta risoluzione: i timestamp non sarebbero QPC";
 
@@ -406,6 +470,8 @@ namespace GpuShareSpike
         public ulong AcquireTimeouts;
         public ulong MarkerReads;
         public ulong MarkerInvalid;
+        public ulong StaleDrained;
+        public ulong LastConsumedSequence;
         public uint  DeviceReady;
         public uint  ChannelsOpen;
     }

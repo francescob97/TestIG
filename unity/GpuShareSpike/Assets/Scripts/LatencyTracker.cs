@@ -15,23 +15,25 @@
 //     ritardo di lettura non entra nel valore: sposta solo QUANDO lo sappiamo.
 //
 //  2) ETA' IN FRAME
-//         unity_frame_index_al_consume - marker.frame_id
-//     Funziona perche' il frame_id della pose E' Time.frameCount di Unity.
+//         Time.frameCount al consume - frame_id della pose di quel frame
+//     Calcolata nel C# al momento in cui si decide il consume: lo STATUS dice
+//     quale pose (frame_id) contiene il buffer, e il frame_id E' il
+//     Time.frameCount di quando la pose e' partita.
+//     (In v1 veniva timbrata dal render thread con un indice di frame scritto
+//     dal main thread, che nel frattempo era gia' avanti di uno: l'eta' era
+//     sistematicamente gonfiata. Ora non dipende piu' da quella corsa.)
 //
 //  3) FPS DEI DUE PROCESSI
 //     Unity dai propri delta; Unreal dal contatore di frame nei pacchetti
 //     STATUS, diviso per il delta di QPC tra due pacchetti.
 //
 //  4) RIPRESENTAZIONI DELLO STESSO FRAME
-//     Dalle statistiche native: consume_attempts - consume_success. Ogni
-//     tentativo di consume che va in timeout e' un frame di Unity in cui non
-//     c'era nulla di nuovo, quindi l'immagine precedente e' stata ripresentata.
-//     Contarlo dal marker sarebbe SBAGLIATO: il marker si aggiorna solo quando
-//     la lettura asincrona riesce, quindi conterebbe ripetizioni inesistenti.
+//     Ogni frame di Unity in cui non e' arrivato uno STATUS con una sequenza
+//     nuova e' un frame in cui l'immagine precedente viene ridisegnata. Si
+//     contano nel C#, dove la decisione viene presa.
 // ============================================================================
 
 using System.Diagnostics;
-using UnityEngine;
 
 namespace GpuShareSpike
 {
@@ -55,12 +57,17 @@ namespace GpuShareSpike
         public double UnityFps { get; private set; }
         public double UnrealFps { get; private set; }
 
-        // --- Ripetizioni -------------------------------------------------------
-        public ulong ConsumeAttempts { get; private set; }
-        public ulong ConsumeSuccess { get; private set; }
+        // --- Frame nuovi e ripetuti (lato C#) ---------------------------------
+        public ulong FramesRunning { get; private set; }
+        public ulong NewFrames { get; private set; }
         public ulong RepeatedFrames { get; private set; }
-        public double RepeatRatio => ConsumeAttempts > 0 ? (double)RepeatedFrames / ConsumeAttempts : 0.0;
+        public double RepeatRatio => FramesRunning > 0 ? (double)RepeatedFrames / FramesRunning : 0.0;
 
+        // --- Dal plugin nativo (cumulativi) -----------------------------------
+        /// <summary>Consume chiesti con uno STATUS fresco ma buffer non acquisibile: deve restare a zero.</summary>
+        public ulong ConsumeFailures { get; private set; }
+        /// <summary>Buffer mai consumati restituiti a Unreal (Unity piu' lento di Unreal).</summary>
+        public ulong StaleDrained { get; private set; }
         public ulong MarkerReads { get; private set; }
         public ulong MarkerInvalid { get; private set; }
 
@@ -75,13 +82,32 @@ namespace GpuShareSpike
 
         private const double SmoothingAlpha = 0.1;
 
+        /// <summary>Da chiamare a ogni riconnessione / cambio di modalita'.</summary>
         public void Reset()
         {
             HasSample = false;
+            LatencyMs = 0.0;
+            LatencyMsSmoothed = 0.0;
             LatencyMsMin = double.MaxValue;
             LatencyMsMax = 0.0;
-            LatencyMsSmoothed = 0.0;
+            AgeFrames = 0;
+            FramesRunning = 0;
+            NewFrames = 0;
+            RepeatedFrames = 0;
             _hasPrevUeSample = false;
+        }
+
+        public void CountNewFrame(long ageFrames)
+        {
+            ++FramesRunning;
+            ++NewFrames;
+            AgeFrames = ageFrames;
+        }
+
+        public void CountRepeat()
+        {
+            ++FramesRunning;
+            ++RepeatedFrames;
         }
 
         public void TickUnityFps(float unscaledDeltaTime)
@@ -151,10 +177,6 @@ namespace GpuShareSpike
             long submitTicks = info.Marker.QpcRenderEnd - info.Marker.QpcPoseSend;
             UnrealSubmitMs = ControlChannelClient.QpcToMilliseconds(submitTicks);
 
-            // unity_frame_index e' il frame in cui il consume e' avvenuto;
-            // marker.frame_id E' Time.frameCount di quando la pose e' partita.
-            AgeFrames = (long)info.UnityFrameIndex - (long)info.Marker.FrameId;
-
             if (!HasSample)
             {
                 LatencyMsSmoothed = LatencyMs;
@@ -171,9 +193,8 @@ namespace GpuShareSpike
 
         public void TickNativeStats(in NativeStats stats)
         {
-            ConsumeAttempts = stats.ConsumeAttempts;
-            ConsumeSuccess  = stats.ConsumeSuccess;
-            RepeatedFrames  = stats.AcquireTimeouts;
+            ConsumeFailures = stats.AcquireTimeouts;
+            StaleDrained    = stats.StaleDrained;
             MarkerReads     = stats.MarkerReads;
             MarkerInvalid   = stats.MarkerInvalid;
         }

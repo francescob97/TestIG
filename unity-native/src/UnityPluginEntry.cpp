@@ -62,6 +62,8 @@ namespace
         std::atomic<uint64_t> consumeAttempts{ 0 };
         std::atomic<uint64_t> consumeSuccess{ 0 };
         std::atomic<uint64_t> acquireTimeouts{ 0 };
+        std::atomic<uint64_t> staleDrained{ 0 };
+        std::atomic<uint64_t> lastConsumedSequence{ 0 };
 
         std::mutex errorMutex;
         std::string lastError;
@@ -122,23 +124,39 @@ namespace
         g.configured.store(true);
     }
 
-    void DoConsume_RenderThread(uint32_t groupId)
+    void DoConsume_RenderThread(uint32_t groupId, int32_t eventId)
     {
         if (!g.configured.load() || groupId >= GPUSHARE_GROUP_COUNT)
         {
             return;
         }
 
+        // I dati del consume viaggiano DENTRO l'id dell'evento: vedi il
+        // commento in NativeApi.h sul perche' non si usa piu' una variabile
+        // condivisa col main thread.
+        const uint32_t readyIndex = GpuShareEventReadyIndex(eventId);
+        const uint32_t sequence   = GpuShareEventSequence(eventId);
+        const bool     drainOther = GpuShareEventDrainOther(eventId) != 0;
+
+        if (drainOther)
+        {
+            const uint32_t otherIndex = (readyIndex + 1u) % GPUSHARE_BUFFERS_PER_CHANNEL;
+            if (g.consumer.DrainGroup(groupId, otherIndex))
+            {
+                g.staleDrained.fetch_add(1);
+            }
+        }
+
         g.consumeAttempts.fetch_add(1);
 
-        const uint32_t readyIndex = g.groupReadyIndex[groupId].load();
         const uint32_t timeoutMs = g.consumeTimeoutMs.load();
 
         int64_t qpcConsume = 0;
         if (!g.consumer.ConsumeGroup(groupId, readyIndex, timeoutMs, qpcConsume))
         {
-            // Nessun frame nuovo: Unity ripresentera' quello precedente.
-            // NON e' un errore, e' il dato che vogliamo contare.
+            // Il C# chiede un consume solo quando ha uno STATUS con una sequenza
+            // nuova, e Unreal manda lo STATUS DOPO aver rilasciato il buffer:
+            // questo ramo dovrebbe essere rarissimo. Lo contiamo per saperlo.
             g.acquireTimeouts.fetch_add(1);
             return;
         }
@@ -148,6 +166,7 @@ namespace
         // Solo il gruppo MAIN porta il marker.
         if (groupId == GS_GROUP_MAIN)
         {
+            g.lastConsumedSequence.store(sequence);
             g.markerReader.Submit(
                 g.consumer.GetContext(),
                 g.consumer.GetMarkerSourceTexture(),
@@ -165,12 +184,12 @@ namespace
 
     void UNITY_INTERFACE_API OnRenderEvent(int eventId)
     {
-        switch (eventId)
+        switch (GpuShareEventType(eventId))
         {
-        case GS_EVENT_CONFIGURE:    DoConfigure_RenderThread();              break;
-        case GS_EVENT_CONSUME_MAIN: DoConsume_RenderThread(GS_GROUP_MAIN);   break;
-        case GS_EVENT_CONSUME_CUBE: DoConsume_RenderThread(GS_GROUP_CUBE);   break;
-        case GS_EVENT_SHUTDOWN:     DoShutdown_RenderThread();               break;
+        case GS_EVENT_CONFIGURE:    DoConfigure_RenderThread();                       break;
+        case GS_EVENT_CONSUME_MAIN: DoConsume_RenderThread(GS_GROUP_MAIN, eventId);   break;
+        case GS_EVENT_CONSUME_CUBE: DoConsume_RenderThread(GS_GROUP_CUBE, eventId);   break;
+        case GS_EVENT_SHUTDOWN:     DoShutdown_RenderThread();                        break;
         default: break;
         }
     }
@@ -258,7 +277,9 @@ extern "C"
 
 int32_t UNITY_INTERFACE_API GpuShare_GetApiVersion()
 {
-    return 1;
+    // 2: eventi di consume con indice/sequenza/drenaggio codificati nell'id,
+    //    stats a 64 byte, protocollo di rete v2.
+    return 2;
 }
 
 int32_t UNITY_INTERFACE_API GpuShare_IsDeviceReady()
@@ -325,6 +346,9 @@ int32_t UNITY_INTERFACE_API GpuShare_Configure(
         }
     }
 
+    // Un errore di un tentativo precedente non deve sembrare di questo: il C#
+    // decide se l'apertura e' fallita guardando proprio GetLastError.
+    g.SetError("");
     g.configured.store(false);
     g.configurePending.store(true);
     return 1;
@@ -398,6 +422,8 @@ int32_t UNITY_INTERFACE_API GpuShare_GetStats(GpuShareNativeStats* outStats)
     outStats->acquire_timeouts = g.acquireTimeouts.load();
     outStats->marker_reads     = g.markerReader.GetReadCount();
     outStats->marker_invalid   = g.markerReader.GetInvalidCount();
+    outStats->stale_drained    = g.staleDrained.load();
+    outStats->last_consumed_sequence = g.lastConsumedSequence.load();
     outStats->device_ready     = (g.device != nullptr) ? 1u : 0u;
     outStats->channels_open    = (uint32_t)g.consumer.GetChannelCount();
     return 1;

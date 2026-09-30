@@ -22,7 +22,25 @@ namespace GpuShareSpike
         public const string DllName = "UnityGpuShare";
 
         /// <summary>Versione della ABI attesa dal C#. Deve combaciare con GpuShare_GetApiVersion().</summary>
-        public const int ExpectedApiVersion = 1;
+        public const int ExpectedApiVersion = 2;
+
+        /// <summary>
+        /// Id per GL.IssuePluginEvent che porta con se' i dati del consume.
+        /// Layout identico a GpuShareRenderEvent in NativeApi.h (e testato
+        /// lato C sui casi limite):
+        ///   bit 0..3 tipo, bit 4..5 indice buffer, bit 6 drena l'altro buffer,
+        ///   bit 8..30 sequenza.
+        /// Perche' non una variabile condivisa: il render thread esegue il frame
+        /// N mentre il main thread prepara gia' il frame N+1, e una variabile
+        /// globale verrebbe sovrascritta prima di essere letta.
+        /// </summary>
+        public static int EncodeConsume(Protocol.RenderEvent type, uint readyIndex, bool drainOther, uint sequence)
+        {
+            return (int)(((sequence & 0x7FFFFFu) << 8)
+                       | (drainOther ? 0x40u : 0u)
+                       | ((readyIndex & 0x3u) << 4)
+                       | ((uint)type & 0xFu));
+        }
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GpuShare_GetApiVersion();
@@ -46,9 +64,6 @@ namespace GpuShareSpike
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int GpuShare_GetChannelSize(uint channelId, out uint outWidth, out uint outHeight);
-
-        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void GpuShare_SetGroupReady(uint groupId, uint readyIndex, uint sequence);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void GpuShare_SetFrameContext(ulong unityFrameIndex);

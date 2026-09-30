@@ -31,22 +31,21 @@ class FSocket;
 class FInternetAddr;
 class FRunnableThread;
 
-/** Pose ricevuta da Unity, ancora in SPAZIO UNITY. */
-struct FGpuSharePoseState
+/** Una vista (mono, o un occhio) ricevuta da Unity, ancora in SPAZIO UNITY. */
+struct FGpuShareViewState
 {
-	uint64  FrameId = 0;
-	int64   QpcSend = 0;
-
-	// Convenzione Unity: metri, Y-up, Z-forward, left-handed.
+	// Convenzione Unity: metri, Y-up, Z-forward, left-handed, relativa
+	// all'origine scelta lato Unity (= l'attore ancora lato Unreal).
 	FVector UnityPosition = FVector::ZeroVector;
 	FQuat   UnityRotation = FQuat::Identity;
 
-	float FovYDeg = 60.0f;
-	float Aspect  = 16.0f / 9.0f;
-	float NearM   = 0.1f;
-	float FarM    = 0.0f;
-
-	bool bValid = false;
+	// Tangenti del frustum nello spazio della vista (X destra, Y alto).
+	// Sinistra e basso sono NEGATIVE. Frustum simmetrico: TanLeft == -TanRight.
+	// Il default e' un 60 gradi verticali a 16:9, usato finche' non arriva nulla.
+	float TanLeft  = -1.0264f;
+	float TanRight =  1.0264f;
+	float TanDown  = -0.5774f;
+	float TanUp    =  0.5774f;
 
 	/**
 	 * CONVERSIONE DI COORDINATE - l'unico posto del progetto in cui avviene.
@@ -62,6 +61,10 @@ struct FGpuSharePoseState
 	 * trasforma l'ASSE del quaternione con la stessa permutazione e lascia
 	 * invariato l'angolo, quindi la parte scalare w non cambia:
 	 *     UE.q = (U.q.z, U.q.x, U.q.y, U.q.w)
+	 *
+	 * Le tangenti invece NON cambiano: "destra" e "alto" della vista sono gli
+	 * stessi assi fisici nei due motori (Unity X/Y locali = Unreal Y/Z locali,
+	 * che nello spazio di proiezione di Unreal tornano a essere X/Y).
 	 */
 	FTransform ToUnrealTransform() const
 	{
@@ -78,6 +81,38 @@ struct FGpuSharePoseState
 
 		return FTransform(Rotation.GetNormalized(), PositionCm, FVector::OneVector);
 	}
+
+	bool IsSymmetric() const
+	{
+		return FMath::Abs(TanLeft + TanRight) < 1.0e-4f && FMath::Abs(TanDown + TanUp) < 1.0e-4f;
+	}
+
+	/** FOV verticale in gradi, anche per frustum asimmetrici. */
+	float VerticalFovDeg() const
+	{
+		return FMath::RadiansToDegrees(FMath::Atan(TanUp) - FMath::Atan(TanDown));
+	}
+
+	/** FOV orizzontale in gradi, anche per frustum asimmetrici. */
+	float HorizontalFovDeg() const
+	{
+		return FMath::RadiansToDegrees(FMath::Atan(TanRight) - FMath::Atan(TanLeft));
+	}
+};
+
+/** Pose ricevuta da Unity: una o due viste. */
+struct FGpuSharePoseState
+{
+	uint64  FrameId = 0;
+	int64   QpcSend = 0;
+
+	int32   ViewCount = 1;
+	FGpuShareViewState Views[GPUSHARE_MAX_VIEWS];
+
+	float NearM = 0.1f;
+	float FarM  = 0.0f;
+
+	bool bValid = false;
 };
 
 /** Informazioni arrivate col pacchetto HELLO di Unity. */
@@ -87,6 +122,12 @@ struct FGpuShareClientInfo
 	uint32 AdapterLuidLow = 0;
 	int32  AdapterLuidHigh = 0;
 	uint32 Flags = 0;
+
+	// v2: la forma dello stream la decide Unity.
+	uint32 ViewCount = 1;
+	uint32 ViewWidth = 0;    // 0 = usa il default dei Project Settings
+	uint32 ViewHeight = 0;
+	uint32 RequestId = 0;    // da rimandare nell'handshake
 };
 
 class FGpuShareControlChannel : public FRunnable
@@ -155,6 +196,8 @@ private:
 	bool bHandshakePending = false;
 	GpuShareStatus PendingStatus = {};
 	bool bStatusPending = false;
+
+	bool bVersionMismatchLogged = false;   // solo il thread di rete lo tocca
 
 	std::atomic<uint64> PosePacketCount{ 0 };
 	std::atomic<uint64> BadPacketCount{ 0 };

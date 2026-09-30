@@ -37,6 +37,7 @@ public:
 
 	// ---- Canale COLOR + DEPTH (gruppo MAIN) --------------------------------
 
+	/** Risoluzione per vista di default, usata se Unity non ne chiede una nell'HELLO. */
 	UPROPERTY(config, EditAnywhere, Category = "Main Group", meta = (ClampMin = "16", ClampMax = "7680"))
 	int32 ColorWidth = 1920;
 
@@ -47,7 +48,11 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Main Group", meta = (ClampMin = "0.0", ClampMax = "480.0"))
 	float MainCaptureHz = 0.0f;
 
-	/** Canale DEPTH: depth lineare in centimetri, R32_FLOAT, stesso frame del colore. */
+	/**
+	 * Canale DEPTH: depth lineare in centimetri, R32_FLOAT, stesso frame del
+	 * colore. Esiste solo se lo vuole anche Unity (flag nell'HELLO).
+	 * In stereo raddoppia: una cattura di depth in piu' per occhio.
+	 */
 	UPROPERTY(config, EditAnywhere, Category = "Main Group")
 	bool bEnableDepthChannel = true;
 
@@ -56,7 +61,8 @@ public:
 	/**
 	 * ATTENZIONE AL COSTO: una SceneCaptureComponentCube costa SEI render
 	 * completi della scena. Su un mondo streamato scala-Cesium e' pesante.
-	 * Tienila a risoluzione e cadenza basse.
+	 * Tienila a risoluzione e cadenza basse. Esiste solo se la vuole anche
+	 * Unity (flag nell'HELLO).
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Cube Group")
 	bool bEnableCubeChannel = false;
@@ -68,19 +74,24 @@ public:
 	float CubeCaptureHz = 5.0f;
 
 	// ---- Camera ------------------------------------------------------------
+	// Il FOV non si configura piu' qui: arriva da Unity con ogni pose, come
+	// quattro tangenti per vista (frustum anche asimmetrico, come un occhio di
+	// un visore). Anche il margine per la riproiezione vive in Unity, perche'
+	// solo Unity sa come l'immagine verra' presentata.
+
+	/** Tetto alla risoluzione PER VISTA che Unity puo' chiedere (in VR puo' essere alta). */
+	UPROPERTY(config, EditAnywhere, Category = "Camera", meta = (ClampMin = "256", ClampMax = "8192"))
+	int32 MaxViewDimension = 4096;
 
 	/**
-	 * Margine di FOV renderizzato in piu' rispetto a quello richiesto da Unity.
-	 * Serve al re-crop tardivo: Unreal renderizza piu' largo, Unity puo'
-	 * ritagliare per compensare una rotazione arrivata dopo, senza bordi neri.
-	 * 0 = disattivato.
+	 * true  : ogni vista usa una matrice di proiezione CUSTOM costruita dalle
+	 *         tangenti del frustum. E' l'unico modo di rendere esattamente un
+	 *         occhio di un visore (frustum asimmetrico).
+	 * false : FOV orizzontale simmetrico. Solo per diagnosi: in VR l'immagine
+	 *         non combacera' con l'occhio.
 	 */
-	UPROPERTY(config, EditAnywhere, Category = "Camera", meta = (ClampMin = "0.0", ClampMax = "40.0"))
-	float RenderFovMarginDeg = 0.0f;
-
-	/** Usato finche' Unity non ha mandato la prima pose. */
 	UPROPERTY(config, EditAnywhere, Category = "Camera")
-	float DefaultFovYDeg = 60.0f;
+	bool bUseCustomProjectionMatrix = true;
 
 	/**
 	 * true  : la pose di Unity e' RELATIVA all'attore di cattura, che fa da
@@ -104,12 +115,17 @@ public:
 
 	/**
 	 * Timeout dell'AcquireSync del produttore, in millisecondi.
-	 * Se scade, Unreal SALTA la pubblicazione di quel frame invece di
-	 * bloccarsi: senza questo, un Unity lento o morto congelerebbe il render
-	 * thread di Unreal.
+	 * Se nessun buffer e' libero, Unreal SALTA la pubblicazione di quel frame.
+	 *
+	 * DEFAULT 0, ed e' misurato, non una preferenza: una simulazione del
+	 * protocollo (Unreal piu' veloce di Unity, render thread di Unity in
+	 * ritardo) mostra che con 2 ms il render thread di Unreal resta bloccato
+	 * fino a meta' del tempo, senza dare UN frame in piu' a Unity. Aspettare un
+	 * buffer occupato non serve: se e' occupato, il consumatore e' indietro e
+	 * il frame successivo sara' comunque piu' fresco (latest-wins).
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "GPU Transport", meta = (ClampMin = "0", ClampMax = "100"))
-	int32 ProducerAcquireTimeoutMs = 2;
+	int32 ProducerAcquireTimeoutMs = 0;
 
 	/**
 	 * false = DuplicateHandle verso il PID di Unity (percorso primario).

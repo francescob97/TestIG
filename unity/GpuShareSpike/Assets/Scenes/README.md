@@ -82,11 +82,21 @@ Se ti serve invece che la pose sia una transform di mondo assoluta, spegni
 | **Orthographic** *(default)* | Il quad riempie lo schermo a prescindere dal FOV. Il FOV spedito a Unreal resta un parametro indipendente del driver. Robusto, disaccoppiato. |
 | **Perspective** | **Una sola camera vera.** Il suo `fieldOfView` è quello che va a Unreal, e il quad riempie esattamente il frustum a `QuadDistance`. La corrispondenza tra ciò che Unreal renderizza e ciò che vedi è 1:1 — è la modalità giusta verso cui andare per il VR. |
 
+## VR
+
+Mono e stereo usano la stessa scena. Servono i pacchetti XR e un *Tracked Pose
+Driver (Input System)* sulla Main Camera: guida in
+[`docs/06-vr.md`](../../../../docs/06-vr.md). In VR il quad non viene creato:
+l'immagine di Unreal viene disegnata a schermo intero in ciascun occhio, con
+riproiezione rotazionale.
+
 ## Tasti e parametri utili
 
 | | |
 |---|---|
 | **F1** | mostra/nasconde l'HUD |
+| **F2** | cicla Desktop → VR mono → VR stereo (Unreal si riconfigura da solo) |
+| `ShareClient → Mode` | modalità all'avvio: Auto, Desktop, VrMono, VrStereo |
 | `ShareClient → Debug Mode` | `0` colore, `1` depth in scala di grigi, `2` zoom sugli 8 pixel del marker |
 | `ShareClient → Srgb Decode` | inverti se i colori sembrano sbagliati |
 | `VirtualCameraDriver → Mode` | `Manual` (WASD + mouse, **muove** la camera), `DeterministicSweep` (default, oscillazione ripetibile per misurare, **muove** la camera), `FollowTransform` (**legge** e basta: usala quando a muovere la camera è altro) |

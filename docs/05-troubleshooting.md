@@ -179,13 +179,21 @@ Il trasporto funziona, il problema è nella presentazione.
 
 ### Immagine troppo scura o troppo chiara / slavata
 
-È la gestione del colore. Prova a invertire **SRGB Decode** su `ShareClient`.
+È la gestione del colore. `ShareClient → Srgb Decoding` è **Auto** di default e
+nell'HUD vedi cosa sta facendo (`colore: decodifica sRGB SI/no`).
 
 Il canale COLOR contiene il final color LDR di Unreal, che è codificato sRGB. La
 texture esterna è creata con `linear: true`, quindi Unity **non** converte al
-campionamento e la decodifica la fa il nostro shader. In un progetto Linear color
-space il valore giusto è **acceso**; se hai cambiato il Color Space del progetto
-a Gamma, va spento.
+campionamento e la decodifica la fa il nostro shader, solo se serve:
+
+- progetto in **Linear** color space → va decodificato;
+- progetto in **Gamma** → **no**: il framebuffer vuole i valori così come sono, e
+  decodificarli scurisce l'immagine.
+
+> Il progetto di partenza è in **Gamma** (`ProjectSettings.asset`,
+> `m_ActiveColorSpace: 0`). Con la vecchia impostazione fissa l'immagine veniva
+> decodificata comunque, quindi era **più scura** di quella di Unreal. Con Auto
+> non succede più: se ti sembra cambiata di luminosità, è questa la ragione.
 
 Questo non tocca la strumentazione: gli 8 pixel del marker sono letti in CPU come
 byte grezzi e non passano mai da un sampler.
@@ -208,6 +216,22 @@ Il canale DEPTH è **lineare in centimetri**. Alza o abbassa `Depth Range M` su
 grande serve molto di più.
 
 ---
+
+## VR
+
+Guida completa in [`06-vr.md`](06-vr.md). I sintomi più probabili:
+
+| Sintomo | Causa | Rimedio |
+|---|---|---|
+| HUD: *"VR richiesto ma l'XR non è attivo e non posso avviarlo"* | XR Plug-in Management / OpenXR non installati o non spuntati | `06-vr.md`, sezione 1 |
+| HUD: *"Nessun loader XR si è inizializzato"* | visore spento, o runtime OpenXR di sistema sbagliato | imposta il runtime del visore come runtime OpenXR attivo (Meta Link / SteamVR) |
+| L'immagine nel visore **non segue la testa** e resta fissa | manca il Tracked Pose Driver sulla camera | `06-vr.md`, passo 6 |
+| Entrambi gli occhi vedono la **stessa** immagine in stereo | Render Mode = Multi Pass | OpenXR → Render Mode = **Single Pass Instanced** (l'HUD lo segnala) |
+| HUD: `pose occhi da` in **rosso** (RIPIEGO) | le matrici per occhio non arrivano dal sottosistema XR | verifica OpenXR attivo e Project Validation pulita |
+| Bordi **viola** girando la testa | la testa ha superato il margine renderizzato | alza `VrFovMarginDeg` (costa pixel) |
+| Oggetti vicini che "nuotano" muovendo la testa | è la traslazione, che la riproiezione rotazionale non corregge | atteso; il passo successivo è la riproiezione col depth |
+| WASD, F1, F2 non rispondono dopo aver installato OpenXR | Active Input Handling = solo Input System | Player → Active Input Handling = **Both** (l'HUD lo segnala) |
+| Frame rate del visore basso | 2 (o 4, col depth) catture di scena per frame lato Unreal | `VrResolutionScale` 0.7, `WantDepth` spento, Unreal con `-RenderOffScreen` |
 
 ## Prestazioni e latenza
 

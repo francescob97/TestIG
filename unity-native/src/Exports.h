@@ -56,7 +56,11 @@ extern "C"
     UNITY_INTERFACE_EXPORT int32_t UNITY_INTERFACE_API GpuShare_GetChannelSize(
         uint32_t channelId, uint32_t* outWidth, uint32_t* outHeight);
 
-    /** Indice di buffer pronto per un gruppo, preso dall'ultimo pacchetto STATUS. */
+    /**
+     * DEPRECATA dalla ABI v2: l'indice del buffer viaggia ora dentro l'id
+     * dell'evento di consume (vedi NativeApi.h). Resta esportata solo per non
+     * rompere chi la chiama; non ha piu' effetto sul consume.
+     */
     UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API GpuShare_SetGroupReady(
         uint32_t groupId, uint32_t readyIndex, uint32_t sequence);
 
@@ -71,7 +75,11 @@ extern "C"
      */
     UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API GpuShare_SetConsumeTimeoutMs(uint32_t timeoutMs);
 
-    /** Funzione da passare a GL.IssuePluginEvent / CommandBuffer.IssuePluginEvent. */
+    /**
+     * Funzione da passare a GL.IssuePluginEvent / CommandBuffer.IssuePluginEvent.
+     * L'id dell'evento codifica tipo, indice del buffer, drenaggio e sequenza:
+     * vedi GpuShareRenderEvent in NativeApi.h.
+     */
     UNITY_INTERFACE_EXPORT UnityRenderingEvent UNITY_INTERFACE_API GpuShare_GetRenderEventFunc();
 
     /** Ultimo marker decodificato, con il suo qpc_consume. Vedi NativeApi.h. */

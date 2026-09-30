@@ -33,7 +33,7 @@ che sembra un bug del trasporto.
 
 | Impostazione | Valore | Perché |
 |---|---|---|
-| **Color Space** | `Linear` | Default di URP. Determina come va interpretato il canale COLOR. |
+| **Color Space** | `Linear` o `Gamma` | Entrambi vanno bene: `ShareClient` decodifica il canale COLOR solo in Linear (Srgb Decoding = Auto). Il progetto del repository è in Gamma. |
 | **Auto Graphics API for Windows** | ☐ **disattivato** | |
 | **Graphics APIs for Windows** | **solo `Direct3D11`** | Con D3D12 o Vulkan il plugin non trova un `ID3D11Device` e si ferma con un errore esplicito. |
 | **Api Compatibility Level** | `.NET Standard 2.1` | Serve per `Span<T>` e `BinaryPrimitives`. |
@@ -175,7 +175,17 @@ marker.
 
 ---
 
-## 8. Attivare depth e cubemap
+## 8. VR
+
+Mono e stereo, con lo stesso progetto e la stessa scena: guida completa in
+[`06-vr.md`](06-vr.md). In breve: installa XR Plug-in Management + OpenXR,
+Active Input Handling = **Both**, Render Mode = **Single Pass Instanced**,
+aggiungi un *Tracked Pose Driver (Input System)* alla Main Camera, poi
+`ShareClient → Mode` oppure **F2** a runtime.
+
+---
+
+## 9. Attivare depth e cubemap
 
 - **Depth**: è già attivo da entrambi i lati. Metti `Debug Mode = 1` per vederlo.
 - **Cubemap**:

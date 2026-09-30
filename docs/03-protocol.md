@@ -16,6 +16,9 @@ tornano; `Protocol.SelfTest()` fa fallire l'avvio lato C#.
 - Trasporto **UDP su localhost**. Unreal ascolta su `45001` e risponde
   all'indirizzo da cui è arrivato l'`HELLO`, quindi Unity non ha bisogno di una
   porta fissa.
+- **Versione 2** (viste multiple per il VR). Un lato che riceve un pacchetto
+  dell'altra versione lo scarta **e lo dice** (log di Unreal, HUD di Unity):
+  succede quando si ricompila un lato solo.
 
 ---
 
@@ -24,14 +27,14 @@ tornano; `Protocol.SelfTest()` fa fallire l'avvio lato C#.
 | Offset | Tipo | Campo |
 |---|---|---|
 | 0 | `uint32` | `magic` = `0x47535031` (`'GSP1'`) |
-| 4 | `uint16` | `version` = 1 |
+| 4 | `uint16` | `version` = 2 |
 | 6 | `uint16` | `type` |
 
 `type`: 1 `HELLO`, 2 `HANDSHAKE`, 3 `POSE`, 4 `STATUS`, 5 `BYE`.
 
 ---
 
-## HELLO — Unity → Unreal — 24 byte
+## HELLO — Unity → Unreal — 40 byte
 
 | Offset | Tipo | Campo |
 |---|---|---|
@@ -40,14 +43,26 @@ tornano; `Protocol.SelfTest()` fa fallire l'avvio lato C#.
 | 12 | `uint32` | `adapter_luid_low` |
 | 16 | `int32` | `adapter_luid_high` |
 | 20 | `uint32` | `flags` — bit0 `WANT_DEPTH`, bit1 `WANT_CUBE` |
+| 24 | `uint32` | `view_count` — 1 mono, 2 stereo |
+| 28 | `uint32` | `view_width` — risoluzione **per vista**; 0 = default di Unreal |
+| 32 | `uint32` | `view_height` |
+| 36 | `uint32` | `request_id` — cambia a ogni (ri)connessione di Unity |
 
-Ripetuto ogni 0.5 s finché non arriva l'`HANDSHAKE`. Questo rende l'ordine di
-avvio dei due processi irrilevante e permette di riavviare Unreal senza
-riavviare Unity.
+**È Unity a decidere la forma dello stream.** Unreal crea le superfici al primo
+HELLO e le **ricrea** quando un HELLO chiede una forma diversa (per esempio si
+passa da desktop a VR stereo). Un canale opzionale esiste solo se lo vogliono
+entrambi i lati: Unreal nei Project Settings (per il costo), Unity nei flag
+(per l'uso).
+
+Ripetuto ogni 0.5 s finché non arriva l'`HANDSHAKE` che risponde al
+`request_id` corrente. Un HELLO ripetuto con la stessa forma dallo stesso
+processo **non** ricrea nulla e **non** riduplica gli handle (lo farebbe
+chiudendo quelli che Unity sta aprendo proprio in quel momento): rimanda lo
+stesso handshake col `request_id` nuovo.
 
 ---
 
-## HANDSHAKE — Unreal → Unity — 256 byte
+## HANDSHAKE — Unreal → Unity — 344 byte
 
 | Offset | Tipo | Campo |
 |---|---|---|
@@ -57,15 +72,21 @@ riavviare Unity.
 | 16 | `int32` | `adapter_luid_high` |
 | 20 | `uint32` | `channel_count` |
 | 24 | `uint32` | `handle_mode` — 0 duplicato, 1 nominato |
-| 28 | `uint32` | riservato |
-| 32 | `char[64]` | `name_prefix` (solo se `handle_mode == 1`) |
-| 96 | `ChannelDesc[4]` | 40 byte ciascuno |
+| 28 | `uint32` | `view_count` — viste effettivamente create |
+| 32 | `uint32` | `config_id` — cambia a ogni ricreazione delle superfici |
+| 36 | `uint32` | `request_id` — eco di quello dell'HELLO a cui risponde |
+| 40 | `char[64]` | `name_prefix` (solo se `handle_mode == 1`) |
+| 104 | `ChannelDesc[6]` | 40 byte ciascuno |
+
+Unity accetta **solo** l'handshake che risponde alla sua richiesta corrente.
+Dopo un cambio di modalità, per un po' arrivano ancora risposte a HELLO vecchi:
+senza `request_id` Unity aprirebbe le texture della configurazione sbagliata.
 
 ### ChannelDesc — 40 byte
 
 | Offset | Tipo | Campo |
 |---|---|---|
-| +0 | `uint32` | `channel_id` — 0 COLOR, 1 DEPTH, 2 CUBE |
+| +0 | `uint32` | `channel_id` — 0 COLOR, 1 DEPTH, 2 CUBE, 3 COLOR_1, 4 DEPTH_1 |
 | +4 | `uint32` | `group_id` — 0 MAIN, 1 CUBE |
 | +8 | `uint32` | `width` |
 | +12 | `uint32` | `height` |
@@ -78,30 +99,65 @@ Gli handle sono **valori validi nello spazio del processo Unity**: Unreal li ha
 già duplicati con `DuplicateHandle`. In modalità nominata valgono 0 e Unity
 ricostruisce i nomi come `<name_prefix>_ch<channel_id>_b<index>`.
 
+Vista 0 = mono, oppure occhio **sinistro**; vista 1 = occhio **destro** (stessa
+convenzione di `unity_StereoEyeIndex`). I canali della vista 1 esistono solo
+in stereo. Il marker sta solo in `COLOR` (vista 0): il gruppo è atomico, quindi
+identifica il frame di tutti i canali.
+
 I due LUID sono la prima cosa che Unity confronta. Se divergono, la condivisione
 non può funzionare e il sintomo — senza questo controllo — sarebbe solo un
 `HRESULT` di errore da `OpenSharedResource1`.
 
 ---
 
-## POSE — Unity → Unreal — 68 byte
+## POSE — Unity → Unreal — 128 byte
 
 | Offset | Tipo | Campo |
 |---|---|---|
 | 0 | | header |
 | 8 | `uint64` | `frame_id` — **è `Time.frameCount` di Unity** |
 | 16 | `int64` | `qpc` — `QueryPerformanceCounter` all'invio |
-| 24 | `float[3]` | posizione |
-| 36 | `float[4]` | quaternione `(x, y, z, w)` |
-| 52 | `float` | `fov_y_deg` — **verticale** |
-| 56 | `float` | `aspect` |
-| 60 | `float` | `near_m` |
-| 64 | `float` | `far_m` — 0 = infinito |
+| 24 | `uint32` | `view_count` — quante viste sono valide |
+| 28 | `uint32` | `flags` — riservato |
+| 32 | `View[2]` | 44 byte ciascuna |
+| 120 | `float` | `near_m` |
+| 124 | `float` | `far_m` — 0 = infinito |
+
+### View — 44 byte
+
+| Offset | Tipo | Campo |
+|---|---|---|
+| +0 | `float[3]` | posizione (metri, relativa all'origine) |
+| +12 | `float[4]` | quaternione `(x, y, z, w)` |
+| +28 | `float` | `tan_left` — **negativa** |
+| +32 | `float` | `tan_right` |
+| +36 | `float` | `tan_down` — **negativa** |
+| +40 | `float` | `tan_up` |
+
+Le viste oltre `view_count` vengono riempite con una copia della vista 0, mai
+con zeri: tangenti nulle sarebbero un frustum degenere.
+
+### Perché quattro tangenti e non FOV + aspect
+
+Un occhio di un visore ha un frustum **asimmetrico**: il centro ottico non è al
+centro dell'immagine. FOV + aspect descrivono solo frustum simmetrici; quattro
+tangenti descrivono qualunque frustum, sono la stessa forma di OpenXR
+(`XrFovf`, che usa gli angoli) e non dipendono dalle convenzioni di clip space
+dei due motori, che sono diverse. Il desktop è il caso particolare simmetrico
+(`tan_left = -tan_right`, `tan_down = -tan_up`).
+
+Lato Unreal le tangenti diventano una matrice di proiezione **off-center**
+reversed-Z con far infinito, la stessa forma che usa il plugin OpenXR di Unreal.
+La corrispondenza tra i due motori è verificata numericamente: la stessa
+direzione nel mondo cade sullo stesso pixel in Unity e in Unreal, su 2000 pose e
+frustum asimmetrici casuali, con errore a precisione di macchina.
 
 ### Convenzione di coordinate
 
-I valori sono in **spazio Unity**: metri, Y-up, Z-forward, left-handed.
-La conversione avviene in **un unico punto**, `FGpuSharePoseState::ToUnrealTransform()`.
+I valori sono in **spazio Unity**: metri, Y-up, Z-forward, left-handed,
+relativi all'origine (`OriginTransform`) che corrisponde all'attore ancora lato
+Unreal. La conversione avviene in **un unico punto**,
+`FGpuShareViewState::ToUnrealTransform()`.
 
 ```
 Unity : X destra,  Y alto,   Z avanti,  metri
@@ -116,9 +172,8 @@ permutazione **ciclica** degli assi, cioè una rotazione propria (determinante
 +1), ed entrambi i sistemi sono left-handed: l'asse si permuta come un vettore
 qualsiasi e l'angolo — quindi `w` — non cambia.
 
-Attenzione anche al **FOV**: Unity usa il verticale (`Camera.fieldOfView`),
-`USceneCaptureComponent2D::FOVAngle` usa l'orizzontale. La conversione
-(`tan(h/2) = tan(v/2) · aspect`) è in `AGpuShareCaptureActor::ApplyPose`.
+Le **tangenti** invece non cambiano: "destra" e "alto" della vista sono gli
+stessi assi fisici nei due motori.
 
 ### Latest-wins
 
@@ -140,11 +195,11 @@ Sovrascrivendo, la latenza resta limitata dal tempo di un frame.
 | 8 | `uint64` | `ue_frame_counter` — per calcolare gli FPS di Unreal |
 | 16 | `int64` | `qpc` all'invio |
 | 24 | `uint32` | `group_count` |
-| 28 | `uint32` | riservato |
+| 28 | `uint32` | `config_id` — configurazione delle superfici a cui si riferisce |
 | 32 | `GroupStatus[2]` | 40 byte ciascuno |
 | 112 | `float[16]` | `ue_view_matrix` — **diagnostica** |
 | 176 | `float[16]` | `ue_proj_matrix` — **diagnostica** |
-| 240 | `float` | `applied_fov_y_deg` |
+| 240 | `float` | `applied_fov_y_deg` — della vista 0 |
 | 244 | `float` | `applied_near_cm` |
 | 248 | `float` | `render_fov_y_deg` |
 | 252 | `float` | `depth_scale_to_meters` = 0.01 |
@@ -160,6 +215,17 @@ Sovrascrivendo, la latenza resta limitata dal tempo di un frame.
 | +24 | `int64` | `qpc_render_end` |
 | +32 | `uint32` | `sequence` |
 | +36 | `uint32` | `valid` |
+
+Unity scarta gli STATUS con un `config_id` diverso da quello aperto: dopo una
+riconfigurazione le sequenze ripartono da 1, e mescolarle darebbe indici
+sbagliati.
+
+**Quando Unity consuma un frame:** solo quando arriva uno STATUS con una
+sequenza nuova. Unreal manda lo STATUS *dopo* aver rilasciato il buffer, quindi
+a quel punto il buffer contiene proprio il frame annunciato: Unity sa con
+certezza quale pose sta mostrando, ed è ciò che serve per riproiettarlo in VR.
+Lo STATUS viene rimandato a ogni frame di Unreal, anche quando la pubblicazione
+è saltata: uno STATUS perso viene recuperato dal successivo.
 
 ### Le matrici sono diagnostiche, non da usare
 

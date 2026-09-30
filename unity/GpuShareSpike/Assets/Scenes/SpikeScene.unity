@@ -202,8 +202,9 @@ MonoBehaviour:
   Projection: 1
   QuadDistance: 10
   PresentShader: {fileID: 4800000, guid: 5570527b7e8e5da4c88afc7f26a76a84, type: 3}
+  VrPresentShader: {fileID: 4800000, guid: fac99d5ef24c4963aa26c78eda50beff, type: 3}
   DebugMode: 0
-  SrgbDecode: 1
+  SrgbDecoding: 0
   DepthRangeM: 50
   ConsumeTimeoutMs: 0
 --- !u!4 &790114343

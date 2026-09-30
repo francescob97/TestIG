@@ -24,7 +24,10 @@
 // ---------------------------------------------------------------------------
 
 #define GPUSHARE_PROTOCOL_MAGIC        0x47535031u   // 'GSP1' little endian
-#define GPUSHARE_PROTOCOL_VERSION      1
+// v2: viste multiple (VR stereo), HELLO/POSE/HANDSHAKE estesi, config_id e
+//     request_id per le riconfigurazioni. Incompatibile con v1: i due lati
+//     rifiutano i pacchetti dell'altra versione e lo dicono nel log/HUD.
+#define GPUSHARE_PROTOCOL_VERSION      2
 
 // Il marker di strumentazione occupa i primi 8 pixel in alto a sinistra del
 // canale COLOR. 8 pixel BGRA8 = 32 byte esatti.
@@ -32,7 +35,8 @@
 #define GPUSHARE_MARKER_PIXELS         8
 #define GPUSHARE_MARKER_BYTES          32
 
-#define GPUSHARE_MAX_CHANNELS          4
+#define GPUSHARE_MAX_CHANNELS          6             // 2 viste x (colore+depth) + cube + riserva
+#define GPUSHARE_MAX_VIEWS             2             // 1 = mono (desktop o VR mono), 2 = VR stereo
 #define GPUSHARE_BUFFERS_PER_CHANNEL   2             // doppio buffer
 #define GPUSHARE_GROUP_COUNT           2             // MAIN + CUBE
 
@@ -66,10 +70,19 @@ enum GpuSharePacketType : uint16_t
 
 enum GpuShareChannelId : uint32_t
 {
-    GS_CH_COLOR = 0,        // B8G8R8A8_UNORM, porta il marker
-    GS_CH_DEPTH = 1,        // R32_FLOAT, depth lineare in CENTIMETRI (unita' Unreal)
-    GS_CH_CUBE  = 2,        // B8G8R8A8_UNORM, atlas 3x2 delle facce cubemap
+    // Numerazione di v1 invariata per i primi tre, cosi' il caso mono resta
+    // identico a prima. Gli ID della vista 1 esistono solo in stereo.
+    GS_CH_COLOR   = 0,      // vista 0: B8G8R8A8_UNORM, porta il marker
+    GS_CH_DEPTH   = 1,      // vista 0: R32_FLOAT, depth lineare in CENTIMETRI
+    GS_CH_CUBE    = 2,      // B8G8R8A8_UNORM, atlas 3x2 delle facce cubemap
+    GS_CH_COLOR_1 = 3,      // vista 1 (occhio destro): B8G8R8A8_UNORM
+    GS_CH_DEPTH_1 = 4,      // vista 1 (occhio destro): R32_FLOAT
 };
+
+// Vista 0 = mono, oppure occhio SINISTRO in stereo.
+// Vista 1 = occhio DESTRO. Stessa convenzione di unity_StereoEyeIndex.
+static inline uint32_t GpuShareColorChannelForView(uint32_t View) { return View == 0 ? GS_CH_COLOR : GS_CH_COLOR_1; }
+static inline uint32_t GpuShareDepthChannelForView(uint32_t View) { return View == 0 ? GS_CH_DEPTH : GS_CH_DEPTH_1; }
 
 enum GpuShareGroupId : uint32_t
 {
@@ -129,8 +142,18 @@ struct GpuShareHello
     uint32_t adapter_luid_low;      // LUID dell'adapter D3D11 di Unity
     int32_t  adapter_luid_high;     // (i due processi DEVONO stare sulla stessa GPU)
     uint32_t flags;                 // GpuShareHelloFlags
+
+    // --- v2: e' Unity a decidere la forma dello stream ---------------------
+    uint32_t view_count;            // 1 = mono, 2 = stereo
+    uint32_t view_width;            // risoluzione PER VISTA richiesta; 0 = default di Unreal
+    uint32_t view_height;           //   (Unreal la limita a MaxViewDimension)
+    uint32_t request_id;            // cambia a ogni (ri)connessione di Unity.
+                                    // Unreal lo rimanda nell'HANDSHAKE: Unity accetta
+                                    // solo l'handshake che risponde alla SUA richiesta
+                                    // corrente, e ignora quelli di richieste vecchie
+                                    // ancora in volo dopo un cambio di modalita'.
 };
-static_assert(sizeof(GpuShareHello) == 24, "GpuShareHello deve essere 24 byte");
+static_assert(sizeof(GpuShareHello) == 40, "GpuShareHello deve essere 40 byte");
 
 // ---------------------------------------------------------------------------
 //  Descrittore di un canale (dentro l'handshake)
@@ -168,44 +191,73 @@ struct GpuShareHandshake
                                     // di OpenSharedResource1 sarebbe muto.
     uint32_t channel_count;
     uint32_t handle_mode;           // GpuShareHandleMode
-    uint32_t reserved0;
+    uint32_t view_count;            // viste effettivamente create (1 o 2)
+    uint32_t config_id;             // cambia ogni volta che Unreal ricrea le superfici.
+                                    // Gli STATUS lo riportano: Unity scarta quelli di
+                                    // una configurazione diversa da quella aperta.
+    uint32_t request_id;            // eco del request_id dell'HELLO a cui risponde
 
     char     name_prefix[64];       // usato solo in GS_HANDLEMODE_NAMED
 
     GpuShareChannelDesc channels[GPUSHARE_MAX_CHANNELS];
 };
-static_assert(sizeof(GpuShareHandshake) == 256, "GpuShareHandshake deve essere 256 byte");
+static_assert(sizeof(GpuShareHandshake) == 344, "GpuShareHandshake deve essere 344 byte");
 
 // ---------------------------------------------------------------------------
 //  POSE : Unity -> Unreal
 //
-//  CONVENZIONE DI COORDINATE: questi valori sono in SPAZIO UNITY.
+//  CONVENZIONE DI COORDINATE: posizione e rotazione sono in SPAZIO UNITY,
+//  relative all'origine scelta lato Unity (OriginTransform), che corrisponde
+//  all'attore ANCORA lato Unreal.
 //    Unity : X destra, Y alto, Z avanti, METRI,       left-handed
 //    Unreal: X avanti, Y destra, Z alto, CENTIMETRI,  left-handed
 //  La conversione avviene in un unico punto lato Unreal
-//  (FGpuSharePose::ToUnreal in Net/ControlChannel.h). Non farla altrove.
+//  (FGpuSharePoseState::ToUnrealTransform in Net/ControlChannel.h).
+//
+//  PROIEZIONE: quattro TANGENTI invece di fov + aspect.
+//  E' l'unica rappresentazione che descrive un frustum ASIMMETRICO, cioe' cio'
+//  che ogni occhio di un visore ha davvero; ed e' la stessa forma che usa
+//  OpenXR (XrFovf, che pero' usa gli angoli). E' anche indipendente dalle
+//  convenzioni di clip space dei due motori, che sono diverse: per questo non
+//  si spedisce una matrice di proiezione.
+//    tan_left  = tan(angolo del bordo sinistro)  -> NEGATIVO
+//    tan_right = tan(angolo del bordo destro)    -> positivo
+//    tan_down  = tan(angolo del bordo inferiore) -> NEGATIVO
+//    tan_up    = tan(angolo del bordo superiore) -> positivo
+//  misurati nello spazio della vista: X destra, Y alto, guardando avanti.
+//  Un frustum simmetrico (desktop) ha tan_left = -tan_right, tan_down = -tan_up.
 // ---------------------------------------------------------------------------
+
+struct GpuShareView
+{
+    float position[3];              // metri, spazio Unity, relativo all'origine
+    float rotation[4];              // quaternione Unity (x, y, z, w)
+    float tan_left;
+    float tan_right;
+    float tan_down;
+    float tan_up;
+};
+static_assert(sizeof(GpuShareView) == 44, "GpuShareView deve essere 44 byte");
 
 struct GpuSharePose
 {
     GpuShareHeader header;
 
-    uint64_t frame_id;              // contatore monotono di Unity
+    uint64_t frame_id;              // Time.frameCount di Unity all'invio
     int64_t  qpc;                   // QueryPerformanceCounter all'invio.
                                     // QPC e' coerente tra processi sulla stessa
                                     // macchina: e' il time base condiviso su cui
                                     // si misura tutto l'anello pose->pixel.
 
-    float    position[3];           // metri, spazio Unity
-    float    rotation[4];           // quaternione Unity (x, y, z, w)
+    uint32_t view_count;            // quante viste sono valide (1 o 2)
+    uint32_t flags;                 // riservato
 
-    float    fov_y_deg;             // FOV VERTICALE (convenzione Unity;
-                                    // Unreal usa l'orizzontale, converte lui)
-    float    aspect;                // larghezza / altezza
+    GpuShareView views[GPUSHARE_MAX_VIEWS];
+
     float    near_m;                // metri
     float    far_m;                 // metri (0 = infinito)
 };
-static_assert(sizeof(GpuSharePose) == 68, "GpuSharePose deve essere 68 byte");
+static_assert(sizeof(GpuSharePose) == 128, "GpuSharePose deve essere 128 byte");
 
 // ---------------------------------------------------------------------------
 //  STATUS : Unreal -> Unity
@@ -234,7 +286,7 @@ struct GpuShareStatus
     uint64_t ue_frame_counter;      // frame del motore Unreal (per gli FPS di UE)
     int64_t  qpc;                   // QPC all'invio di questo pacchetto
     uint32_t group_count;
-    uint32_t reserved0;
+    uint32_t config_id;             // configurazione delle superfici a cui si riferisce
 
     GpuShareGroupStatus groups[GPUSHARE_GROUP_COUNT];
 
@@ -246,7 +298,7 @@ struct GpuShareStatus
     float    ue_view_matrix[16];
     float    ue_proj_matrix[16];
 
-    float    applied_fov_y_deg;     // FOV verticale effettivamente applicato
+    float    applied_fov_y_deg;     // FOV verticale della vista 0 (atan(up) - atan(down))
     float    applied_near_cm;
     float    render_fov_y_deg;      // >= applied se usi il margine FOV per il
                                     // re-crop tardivo (RenderFovMarginDeg)

@@ -53,6 +53,14 @@ public:
     bool ConsumeGroup(uint32_t groupId, uint32_t readyIndex, uint32_t timeoutMs,
                       int64_t& outQpcConsume);
 
+    /**
+     * Restituisce al produttore il buffer indicato SENZA copiarlo. Serve a non
+     * lasciare un buffer mai consumato nello stato "consumatore" per sempre:
+     * vedi il commento sul drenaggio in NativeApi.h. Timeout 0: se il buffer
+     * non e' acquisibile, non c'era niente da drenare.
+     */
+    bool DrainGroup(uint32_t groupId, uint32_t bufferIndex);
+
     /** Texture Unity del canale che porta il marker (serve al MarkerReader). */
     ID3D11Texture2D* GetMarkerSourceTexture() const { return m_markerSource; }
 
@@ -77,6 +85,14 @@ private:
                           uint32_t handleMode, const char* namePrefix,
                           std::string& outError);
     bool CreateUnityTexture(Channel& channel, std::string& outError);
+
+    /** Indici dei canali del gruppo, nell'ordine in cui vanno acquisiti. */
+    int32_t CollectGroupMembers(uint32_t groupId, int32_t (&members)[GPUSHARE_MAX_CHANNELS]) const;
+
+    /** Acquisisce il buffer su tutti i membri, con rollback se uno fallisce. */
+    bool AcquireMembers(const int32_t* members, int32_t memberCount, uint32_t bufferIndex,
+                        uint64_t key, uint32_t timeoutMs);
+    void ReleaseMembers(const int32_t* members, int32_t memberCount, uint32_t bufferIndex, uint64_t key);
 
     Microsoft::WRL::ComPtr<ID3D11Device>        m_device;
     Microsoft::WRL::ComPtr<ID3D11Device1>       m_device1;

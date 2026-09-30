@@ -50,6 +50,10 @@ Shader "GpuShare/Present"
             HLSLPROGRAM
             #pragma vertex Vertex
             #pragma fragment Fragment
+            // Macro di Single Pass Instanced: innocue in desktop, necessarie se
+            // il quad venisse disegnato con l'XR attivo (altrimenti comparirebbe
+            // in un occhio solo).
+            #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
@@ -71,17 +75,21 @@ Shader "GpuShare/Present"
             {
                 float4 positionOS : POSITION;
                 float2 uv         : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
                 float2 uv         : TEXCOORD0;
+                UNITY_VERTEX_OUTPUT_STEREO
             };
 
             Varyings Vertex(Attributes input)
             {
                 Varyings output;
+                UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
                 output.uv = input.uv;
                 return output;
@@ -98,6 +106,8 @@ Shader "GpuShare/Present"
 
             float4 Fragment(Varyings input) : SV_Target
             {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+
                 // La texture arriva con origine in alto a sinistra (convenzione
                 // D3D), le UV di Unity hanno origine in basso a sinistra.
                 float2 uv = float2(input.uv.x, 1.0 - input.uv.y);

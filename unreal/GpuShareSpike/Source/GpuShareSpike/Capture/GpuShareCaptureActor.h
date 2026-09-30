@@ -3,12 +3,12 @@
 //
 //  Cosa fa, in ordine, a ogni frame:
 //    1. legge l'ULTIMA pose arrivata da Unity (latest-wins)
-//    2. la applica a CameraRoot, quindi alle SceneCapture che ne sono figlie
+//    2. applica ogni vista al suo CameraRoot (posizione, rotazione, frustum)
 //    3. chiede la cattura delle scene
 //    4. accoda sul render thread la copia verso le superfici condivise
 //
 //  ------------------------------------------------------------------------
-//  GERARCHIA, ED E' IL PUNTO CHE CONTA
+//  GERARCHIA
 //
 //      AGpuShareCaptureActor            <-- L'ANCORA (origine dello spazio Unity)
 //        |                                  La sua transform NON e' toccata da
@@ -16,31 +16,31 @@
 //        |                                  vuoi (Blueprint, C++, un componente
 //        |                                  esterno, un globe anchor di Cesium)
 //        |                                  e tutto lo spazio di Unity ci va dietro.
-//        +-- CameraRoot                 <-- guidato dalla pose che arriva da Unity,
-//              |                            in coordinate RELATIVE all'ancora
-//              +-- ColorCapture
-//              +-- DepthCapture
-//              +-- CubeCapture
+//        +-- CameraRoot                 <-- vista 0: mono, oppure occhio SINISTRO
+//        |     +-- ColorCapture
+//        |     +-- DepthCapture
+//        |     +-- CubeCapture
+//        +-- CameraRootRight            <-- vista 1: occhio DESTRO (solo in stereo)
+//              +-- ColorCaptureRight
+//              +-- DepthCaptureRight
 //
-//  Quindi: l'origine del mondo di Unity (o il suo OriginTransform, se ne
-//  assegni uno) coincide con la transform di QUESTO ATTORE nel mondo Unreal.
-//  Unity lavora in uno spazio locale piccolo e ben condizionato, in metri,
-//  vicino all'origine; l'ancora lo colloca dove serve nel mondo enorme di
-//  Unreal. E' lo stesso pattern del georeference di Cesium.
+//  Ogni CameraRoot riceve la SUA pose, in coordinate relative all'ancora.
+//  Gli occhi non sono derivati l'uno dall'altro con un offset fisso: arrivano
+//  da Unity cosi' come li fornisce il visore (posizione, rotazione e frustum
+//  asimmetrico di ciascun occhio).
 //
-//  Se invece ti serve che la pose sia una transform di MONDO assoluta, spegni
-//  bPoseRelativeToAnchor nei Project Settings.
 //  ------------------------------------------------------------------------
+//  LA FORMA DELLO STREAM LA DECIDE UNITY
 //
-//  NOTA UE PER CHI VIENE DA UNITY:
-//  un "Actor" e' l'equivalente di un GameObject; i "Component" sono i
-//  componenti. La differenza importante e' che qui non c'e' nessun Blueprint:
-//  i componenti vengono creati nel COSTRUTTORE C++ con CreateDefaultSubobject,
-//  che e' l'unico punto in cui e' lecito farlo.
+//  Quante viste, a che risoluzione, con o senza depth: arriva tutto nell'HELLO.
+//  Le superfici condivise vengono create al primo HELLO e RICREATE se un HELLO
+//  successivo chiede una forma diversa (per esempio Unity passa da desktop a
+//  VR stereo). Un HELLO ripetuto con la stessa forma dallo stesso processo non
+//  ricrea nulla: rimanda lo stesso handshake. Cosi' Unreal puo' restare acceso
+//  mentre Unity viene riavviato in modalita' diverse.
 //
 //  Questo header NON include nulla di D3D11: e' processato da UnrealHeaderTool,
-//  che si confonde con le intestazioni Windows. Le classi D3D vivono dietro
-//  forward declaration e TSharedPtr.
+//  che si confonde con le intestazioni Windows.
 // ============================================================================
 
 #pragma once
@@ -55,8 +55,33 @@ class USceneCaptureComponentCube;
 class UTextureRenderTarget2D;
 class UTextureRenderTargetCube;
 
-// Definite nel .cpp: contengono tipi D3D11 che non possono comparire qui.
+// Definita nel .cpp: contiene tipi D3D11 che non possono comparire qui.
 struct FGpuShareRenderResources;
+
+/** Forma dello stream, decisa da Unity con l'HELLO. Struct C++ semplice, non una USTRUCT. */
+struct FGpuShareStreamConfig
+{
+	int32 ViewCount = 1;
+	int32 Width = 1920;
+	int32 Height = 1080;
+	bool  bDepth = true;
+	bool  bCube = false;
+	int32 CubeFaceSize = 512;
+
+	bool operator==(const FGpuShareStreamConfig& Other) const
+	{
+		return ViewCount == Other.ViewCount && Width == Other.Width && Height == Other.Height
+			&& bDepth == Other.bDepth && bCube == Other.bCube && CubeFaceSize == Other.CubeFaceSize;
+	}
+	bool operator!=(const FGpuShareStreamConfig& Other) const { return !(*this == Other); }
+
+	FString ToString() const
+	{
+		return FString::Printf(TEXT("%d vist%s %dx%d, depth=%s, cube=%s"),
+			ViewCount, ViewCount == 1 ? TEXT("a") : TEXT("e"), Width, Height,
+			bDepth ? TEXT("si") : TEXT("no"), bCube ? TEXT("si") : TEXT("no"));
+	}
+};
 
 UCLASS()
 class GPUSHARESPIKE_API AGpuShareCaptureActor : public AActor
@@ -83,20 +108,25 @@ private:
 	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
 	TObjectPtr<USceneComponent> SceneRoot;
 
-	/**
-	 * Guidato dalla pose che arriva da Unity, in coordinate relative
-	 * all'ancora. E' questo che si muove a ogni frame, non l'attore.
-	 */
+	/** Vista 0 (mono, o occhio sinistro). Guidata dalla pose, relativa all'ancora. */
 	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
 	TObjectPtr<USceneComponent> CameraRoot;
 
-	/** Cattura il colore finale (post-process incluso) -> canale COLOR. */
+	/** Vista 1 (occhio destro). Usata solo in stereo. */
+	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
+	TObjectPtr<USceneComponent> CameraRootRight;
+
 	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
 	TObjectPtr<USceneCaptureComponent2D> ColorCapture;
 
-	/** Cattura il depth lineare in centimetri -> canale DEPTH. */
 	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
 	TObjectPtr<USceneCaptureComponent2D> DepthCapture;
+
+	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
+	TObjectPtr<USceneCaptureComponent2D> ColorCaptureRight;
+
+	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
+	TObjectPtr<USceneCaptureComponent2D> DepthCaptureRight;
 
 	/** Cattura la cubemap per i riflessi -> canale CUBE (facoltativo, costoso). */
 	UPROPERTY(VisibleAnywhere, Category = "GPU Share")
@@ -114,7 +144,19 @@ private:
 	TObjectPtr<UTextureRenderTarget2D> DepthRenderTarget;
 
 	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> ColorRenderTargetRight;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> DepthRenderTargetRight;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTargetCube> CubeRenderTarget;
+
+	/**
+	 * Sorgenti del gruppo MAIN nello STESSO ORDINE dei canali creati.
+	 * Non-owning: i render target sono tenuti vivi dalle UPROPERTY sopra.
+	 */
+	TArray<UTextureRenderTarget2D*> MainSourceTargets;
 
 	// --- Stato non-UObject --------------------------------------------------
 	// TSharedPtr thread-safe, non puntatori grezzi: questi oggetti vengono
@@ -127,14 +169,24 @@ private:
 
 	// --- Metodi interni -----------------------------------------------------
 
-	void InitializeRenderTargets();
-	void InitializeSharedSurfaces();
+	FGpuShareStreamConfig ComputeDesiredConfig(const FGpuShareClientInfo& ClientInfo) const;
+	bool ApplyStreamConfig(const FGpuShareStreamConfig& Config);
 	void HandleHello(const FGpuShareClientInfo& ClientInfo);
 	void ApplyPose(const FGpuSharePoseState& Pose);
+	void ApplyProjection(int32 ViewIndex, const FGpuShareViewState& View);
 	void EnqueuePublish(uint32 GroupId, const FGpuSharePoseState& Pose);
 	bool ShouldCaptureNow(float Hz, double& InOutLastTime, double Now) const;
 
+	USceneComponent* GetCameraRoot(int32 ViewIndex) const;
+	USceneCaptureComponent2D* GetColorCapture(int32 ViewIndex) const;
+	USceneCaptureComponent2D* GetDepthCapture(int32 ViewIndex) const;
+	UTextureRenderTarget2D* CreateRenderTarget(int32 Width, int32 Height, bool bDepthFormat);
+
 	// --- Stato di lavoro ----------------------------------------------------
+
+	FGpuShareStreamConfig CurrentConfig;
+	uint32 ConfigId = 0;          // +1 a ogni ApplyStreamConfig riuscita
+	uint32 HandshakePid = 0;      // processo Unity in cui abbiamo duplicato gli handle
 
 	uint64 UeFrameCounter = 0;
 	double LastMainCaptureTime = 0.0;
@@ -143,24 +195,25 @@ private:
 	uint64 PublishedMainFrames = 0;
 
 	/** Cache dei setting letti al BeginPlay (evita di rileggere il CDO a ogni frame). */
-	int32 CachedColorWidth = 1920;
-	int32 CachedColorHeight = 1080;
+	int32 DefaultViewWidth = 1920;
+	int32 DefaultViewHeight = 1080;
+	int32 MaxViewDimension = 4096;
 	int32 CachedCubeFaceSize = 512;
-	bool  bCachedDepthEnabled = true;
-	bool  bCachedCubeEnabled = false;
+	bool  bSettingsDepthEnabled = true;
+	bool  bSettingsCubeEnabled = false;
 	float CachedMainCaptureHz = 0.0f;
 	float CachedCubeCaptureHz = 5.0f;
-	float CachedRenderFovMarginDeg = 0.0f;
-	int32 CachedAcquireTimeoutMs = 2;
+	int32 CachedAcquireTimeoutMs = 0;
 	int32 CachedLogEveryNFrames = 300;
 	bool  bCachedPoseRelativeToAnchor = true;
+	bool  bCachedUseCustomProjection = true;
 
-	/** FOV verticale effettivamente applicato all'ultimo frame (per lo STATUS). */
+	/** Parametri della vista 0 applicati all'ultimo frame (per lo STATUS). */
 	float AppliedFovYDeg = 60.0f;
-	float RenderFovYDeg = 60.0f;
 	float AppliedNearCm = 10.0f;
 
 	bool bLoggedFirstPose = false;
+	bool bLoggedAsymmetricWithoutCustom = false;
 	bool bSurfacesReady = false;
 	bool bFatalError = false;
 };
