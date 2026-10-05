@@ -201,11 +201,18 @@ namespace GpuShareSpike
         {
             Vector3 current = SourceTransform != null ? SourceTransform.position : _fallbackPosition;
 
-            _manualYaw += Input.GetAxis("Mouse X") * LookSensitivity;
-            _manualPitch = Mathf.Clamp(_manualPitch - Input.GetAxis("Mouse Y") * LookSensitivity, -85.0f, 85.0f);
+            // Con la DevConsole aperta la tastiera serve a scrivere: WASD non
+            // deve muovere la camera, e il mouse serve a usare la console.
+            bool typing = DevTools.DevConsole.IsOpen;
+
+            if (!typing)
+            {
+                _manualYaw += Input.GetAxis("Mouse X") * LookSensitivity;
+                _manualPitch = Mathf.Clamp(_manualPitch - Input.GetAxis("Mouse Y") * LookSensitivity, -85.0f, 85.0f);
+            }
             worldRotation = Quaternion.Euler(_manualPitch, _manualYaw, 0.0f);
 
-            var input = new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical"));
+            var input = typing ? Vector3.zero : new Vector3(Input.GetAxis("Horizontal"), 0.0f, Input.GetAxis("Vertical"));
             worldPosition = current + worldRotation * input * (MoveSpeed * deltaTime);
 
             _fallbackPosition = worldPosition;

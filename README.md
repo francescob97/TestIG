@@ -87,6 +87,7 @@ Poi, quando serve:
 - **[`docs/03-protocol.md`](docs/03-protocol.md)** — layout binario byte per byte
 - **[`docs/04-channels.md`](docs/04-channels.md)** — canali, gruppi, keyed mutex, migrazione a D3D12
 - **[`docs/05-troubleshooting.md`](docs/05-troubleshooting.md)** — sintomo → causa → rimedio
+- **[`docs/06-console.md`](docs/06-console.md)** — console in gioco stile Unreal (`\` o F2): accendere/spegnere oggetti e script, chiamare metodi, SendMessage
 
 ---
 

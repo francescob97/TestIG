@@ -100,7 +100,7 @@ Seleziona `UnityGpuShare.dll` nel Project window e nell'inspector:
 Copia in `Assets/`:
 
 ```
-Assets/Scripts/*.cs       (7 file)
+Assets/Scripts/**/*.cs    (compresa la cartella DevConsole/)
 Assets/Shaders/GpuSharePresent.shader
 ```
 
@@ -169,7 +169,8 @@ ANELLO POSE -> PIXEL
 | **ripetizioni** | Quante volte il consume è andato in timeout, cioè quante volte Unity ha ridisegnato il frame precedente perché non ce n'era uno nuovo. |
 | **ritardo lettura** | Con quanti eventi di ritardo abbiamo *saputo* il valore. **Non entra nella misura**: sposta solo quando la leggiamo. |
 
-Tasti utili: **F1** nasconde l'HUD. Il campo `Debug Mode` di `ShareClient`
+Tasti utili: **F1** nasconde l'HUD, **`\`** o **F2** apre la console in gioco
+([`06-console.md`](06-console.md)). Il campo `Debug Mode` di `ShareClient`
 (0/1/2) commuta tra colore, depth in scala di grigi e zoom sugli 8 pixel del
 marker.
 

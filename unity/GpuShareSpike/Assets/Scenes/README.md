@@ -87,6 +87,7 @@ Se ti serve invece che la pose sia una transform di mondo assoluta, spegni
 | | |
 |---|---|
 | **F1** | mostra/nasconde l'HUD |
+| **`\`** o **F2** | apre la console in gioco: `help`, `disable`, `call`, `send`, `set`... vedi [`docs/06-console.md`](../../../../docs/06-console.md) |
 | `ShareClient → Debug Mode` | `0` colore, `1` depth in scala di grigi, `2` zoom sugli 8 pixel del marker |
 | `ShareClient → Srgb Decode` | inverti se i colori sembrano sbagliati |
 | `VirtualCameraDriver → Mode` | `Manual` (WASD + mouse, **muove** la camera), `DeterministicSweep` (default, oscillazione ripetibile per misurare, **muove** la camera), `FollowTransform` (**legge** e basta: usala quando a muovere la camera è altro) |
